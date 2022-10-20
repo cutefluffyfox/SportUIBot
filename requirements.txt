@@ -1,0 +1,9 @@
+requests~=2.25.1
+beautifulsoup4~=4.11.1
+dill~=0.3.5.1
+python-dotenv~=0.19.2
+aiogram~=2.20
+plotly~=5.10.0
+pandas~=1.5.0
+kaleido~=0.2.1
+timeboard~=0.2.4
