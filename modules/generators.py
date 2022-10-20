@@ -44,7 +44,7 @@ def generate_inline_markup(*args) -> InlineKeyboardMarkup:
     return keyboard
 
 
-def get_week() -> list[tuple[str, str]]:
+def get_week() -> list:
     res = []
     day = datetime.now()
     for i in range(8):
