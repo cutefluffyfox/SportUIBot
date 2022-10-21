@@ -39,6 +39,11 @@ def create_user(user_id: int, student_id: int, session_id: str, csrftoken: str) 
     )
 
 
+def remove_user(user_id: int):
+    ref = db.reference(f'/users/{user_id}')
+    ref.delete()
+
+
 def get_user(user_id: int) -> OrderedDict or None:
     ref = db.reference(f'/users/{user_id}')
     return ref.get()

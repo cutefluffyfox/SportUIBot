@@ -81,7 +81,7 @@ async def session_problem(callback_query: CallbackQuery):
     await callback_query.answer('Updated')
 
 
-@dp.message_handler(commands=['start'])
+@dp.message_handler(commands=['start', 'login'])
 async def start(message: Message):
     await message.answer(
         "Hello! I am sport in IU manager bot.\n"
@@ -120,6 +120,7 @@ async def process_password(message: Message, state: FSMContext):
                 await bot.send_photo(
                     chat_id=message.from_user.id,
                     caption=generators.generate_date_caption(generators.get_today()),
+                    parse_mode='Markdown',
                     reply_markup=generators.generate_date_inline(generators.get_today()),
                     photo=file
                 )
@@ -169,7 +170,7 @@ async def update_image(callback_query: CallbackQuery):
         await bot.edit_message_media(
             chat_id=callback_query.message.chat.id,
             message_id=callback_query.message.message_id,
-            media=InputMediaPhoto(file, caption=generators.generate_date_caption(date)),
+            media=InputMediaPhoto(file, caption=generators.generate_date_caption(date), parse_mode='Markdown'),
             reply_markup=generators.generate_date_inline(date)
         )
     await callback_query.answer('Image is up to date')
@@ -213,7 +214,7 @@ async def select_day(callback_query: CallbackQuery):
         await bot.edit_message_media(
             chat_id=callback_query.message.chat.id,
             message_id=callback_query.message.message_id,
-            media=InputMediaPhoto(file, caption=generators.generate_date_caption(date)),
+            media=InputMediaPhoto(file, caption=generators.generate_date_caption(date), parse_mode='Markdown'),
             reply_markup=generators.generate_date_inline(date)
         )
     await callback_query.answer('Select option')
@@ -227,7 +228,7 @@ async def select_type(callback_query: CallbackQuery):
     await bot.edit_message_caption(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
-        caption='Select sport type that you want to checkin',
+        caption='Select sport type that you want to checkin:',
         reply_markup=generators.generate_date_courses_buttons(date, SESSIONS.get(user_id))
     )
     await callback_query.answer('Select course')
@@ -250,7 +251,7 @@ async def select_time(callback_query: CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == 'auto')
 async def auto_menu(callback_query: CallbackQuery):
-    await callback_query.answer('This feature is under development stage. For more information contact @cutefuffyfox', show_alert=True)
+    await callback_query.answer('This feature is under development stage. For more information contact @cutefluffyfox', show_alert=True)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('tid/'))
@@ -275,12 +276,21 @@ async def select_time(callback_query: CallbackQuery):
         await bot.edit_message_caption(
             chat_id=callback_query.message.chat.id,
             message_id=callback_query.message.message_id,
-            caption='Select time when you want to checkin',
+            caption='Select time when you want to checkin:',
             reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id))
         )
         await callback_query.answer('Successfully changed status')
     except Exception as ex:
         await callback_query.answer('Some error occurred, please try again later', show_alert=True)
+
+
+@dp.message_handler(commands=['logout'])
+async def start(message: Message):
+    user_id = message.from_user.id
+    if SESSIONS.get(user_id):
+        SESSIONS[user_id] = None
+    database.remove_user(user_id)
+    await message.reply("Your session information successfully deleted from the database")
 
 
 @dp.message_handler()
@@ -291,6 +301,7 @@ async def unknown_message(message: Message):
         await bot.send_photo(
             chat_id=message.from_user.id,
             caption=generators.generate_date_caption(generators.get_today()),
+            parse_mode="Markdown",
             reply_markup=generators.generate_date_inline(generators.get_today()),
             photo=file
         )

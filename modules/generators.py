@@ -211,12 +211,13 @@ def generate_date_inline(date: str):
 def generate_my_inline(date: str):
     return generate_inline_markup(
         {'text': 'Set autocheckin', 'callback_data': 'auto'},
-        {'text': 'Back', 'callback_data': f'upd/{date}'}
+        {'text': '« Back', 'callback_data': f'upd/{date}'}
     )
 
 
 def generate_date_caption(date: str):
-    return f'Sport schedule for {date}\n\nHere is the list of commands what this bot can do:'
+    now = datetime.fromisoformat(date)
+    return f'Sport schedule for *{calendar.day_name[now.weekday()]} ({date})*\n\nHere is the list of commands what this bot can do:'
 
 
 def generate_my_caption(session: Session):
@@ -225,7 +226,6 @@ def generate_my_caption(session: Session):
            f'Your statistics:\n' \
            f'• Current sport hours: *{user_statistics["hours"]}*\n' \
            f'• You are better than *{user_statistics["better_than"]}%* of students'
-
 
 
 def generate_date_courses_buttons(date: str, session: Session):
@@ -237,7 +237,7 @@ def generate_date_courses_buttons(date: str, session: Session):
             'text': unique[0],
             'callback_data': f'gid/{date}/{unique[1]}'
         })
-    res.append({'text': 'Cancel', 'callback_data': f'date/{date}'})
+    res.append({'text': '« Back', 'callback_data': f'date/{date}'})
     return generate_inline_markup(*res)
 
 
@@ -258,5 +258,5 @@ def generate_date_group_time_buttons(date: str, group_id: int, session: Session)
             'text': f"{sport['start'].split('T')[1].split('+')[0]}-{sport['end'].split('T')[1].split('+')[0]} ({load}/{capacity}) {symbol}",
             'callback_data': f'tid/{sport["extendedProps"]["id"]}'
         })
-    res.append({'text': 'Cancel', 'callback_data': f'ckin/{date}'})
+    res.append({'text': '« Back', 'callback_data': f'ckin/{date}'})
     return generate_inline_markup(*res)
