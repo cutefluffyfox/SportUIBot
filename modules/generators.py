@@ -107,7 +107,7 @@ def draw_day(session: Session, current_date: str, safe_file_name: str) -> bool:
     fig.update_xaxes(tickvals=[f'{current_date}T{h}:00:00' for h in range(24)])
     fig.update_layout(
         showlegend=False,
-        font=dict(size=16)
+        font=dict(size=15)
     )
 
     fig.write_image(f'images/{safe_file_name}.png')
