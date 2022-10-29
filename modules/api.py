@@ -1,3 +1,5 @@
+import pprint
+
 from requests.exceptions import ContentDecodingError, ConnectionError, RetryError
 from requests import session as create_request_session, get
 from requests.sessions import Session
@@ -79,3 +81,9 @@ def get_user_statistics(session: Session) -> dict:
         'hours': session.get(f'{SERVER_URL}/api/attendance/{session.cookies["student_id"]}/negative_hours').json()['final_hours'],
         'better_than': session.get(f'{SERVER_URL}/api/attendance/{session.cookies["student_id"]}/better_than').json()
     }
+
+
+def get_teachers(session: Session, group_id: int) -> dict:
+    return session.get(f'{SERVER_URL}/api/group/{group_id}').json()['trainers']
+
+

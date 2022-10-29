@@ -2,8 +2,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from requests.sessions import Session
 import plotly.express as px
 from datetime import datetime, timedelta
+from transliterate import translit
 from os.path import isfile
-from modules import api, database
+from modules import api
 import pandas as pd
 import calendar
 
@@ -27,10 +28,7 @@ COLORS = [
     '#aaffc3',
     '#808000',
     '#ffd8b1',
-    '#000075',
-    '#a9a9a9',
-    '#ffffff',
-    '#000000'
+    '#000075'
 ]
 
 
@@ -49,18 +47,18 @@ def get_week() -> list:
     day = datetime.now()
     for i in range(8):
         now = day + timedelta(days=i)
-        res.append((f'{now.year}-{now.month}-{now.day}', calendar.day_name[now.weekday()]))
+        res.append((now.strftime("%Y-%m-%d"), calendar.day_name[now.weekday()]))
     return res
 
 
 def get_today() -> str:
     now = datetime.now()
-    return f'{now.year}-{now.month}-{now.day}'
+    return now.strftime("%Y-%m-%d")
 
 
 def get_shifted_day(shift: int) -> str:
     now = datetime.now() + timedelta(days=shift)
-    return f'{now.year}-{now.month}-{now.day}'
+    return now.strftime("%Y-%m-%d")
 
 
 def __bold(text: str) -> str:
@@ -75,8 +73,8 @@ def __get_time(date: str) -> str:
     return date.split('T')[1].split('+')[0]
 
 
-def draw_day(session: Session, current_date: str, safe_file_name: str):
-    color_map = dict()
+def draw_day(session: Session, current_date: str, safe_file_name: str) -> bool:
+    color_map = dict(not_available="#DDDDDD")
     graph_data = []
     default_colors = False
     for sport in api.get_full_day(session, current_date):
@@ -85,6 +83,12 @@ def draw_day(session: Session, current_date: str, safe_file_name: str):
                 color_map[sport['title']] = COLORS[len(color_map)]
             else:
                 default_colors = True
+        cant_check_in = not sport['extendedProps']['checked_in'] and not sport['extendedProps']['can_check_in']
+
+        symbol = ""
+        if sport['extendedProps']['checked_in']:
+            symbol = " ✔ "
+
         start_datetime = datetime.fromisoformat(sport['start'])
         end_datetime = datetime.fromisoformat(sport['end'])
         graph_data.append({
@@ -92,10 +96,13 @@ def draw_day(session: Session, current_date: str, safe_file_name: str):
             'Start': start_datetime,
             'Finish': end_datetime,
             'Sport type': sport['title'],
-            'Text': __bold(f'{start_datetime.strftime("%H:%M")}-{end_datetime.strftime("%H:%M")}')
+            "Color": sport['title'] if not cant_check_in else "not_available",
+            'Text': symbol + __bold(f'{start_datetime.strftime("%H:%M")}-{end_datetime.strftime("%H:%M")}') + symbol
         })
+    if not graph_data:
+        return False
     df = pd.DataFrame(graph_data)
-    fig = px.timeline(df, x_start="Start", x_end="Finish", y="Sport type", color="Sport type", text='Text',
+    fig = px.timeline(df, x_start="Start", x_end="Finish", y="Sport type", color="Color", text='Text',
                       color_discrete_map=None if default_colors else color_map, width=1920, height=1080)
     fig.update_xaxes(tickvals=[f'{current_date}T{h}:00:00' for h in range(24)])
     fig.update_layout(
@@ -104,49 +111,10 @@ def draw_day(session: Session, current_date: str, safe_file_name: str):
     )
 
     fig.write_image(f'images/{safe_file_name}.png')
+    return True
 
 
-def draw_week_by_sport_type(session: Session, start_date: str, end_date: str, sport_name: str, safe_file_name: str):
-    color_map = dict()
-    graph_data = []
-    default_colors = False
-    start = datetime.fromisoformat(start_date)
-    for sport in api.get_full_time_period(session, start_date, end_date):
-        if sport['title'] != sport_name:
-            continue
-        start_datetime = datetime.fromisoformat(sport['start'])
-        end_datetime = datetime.fromisoformat(sport['end'])
-        start_time = datetime(hour=start_datetime.hour, minute=start_datetime.minute, day=start.day, month=start.month,
-                              year=start.year)
-        end_time = datetime(hour=end_datetime.hour, minute=end_datetime.minute, day=start.day, month=start.month,
-                            year=start.year)
-        day = datetime(day=start_datetime.day, month=start_datetime.month, year=start_datetime.year).strftime(
-            '%Y/%m/%d')
-        weekday = calendar.day_name[start_datetime.weekday()]
-
-        if color_map.get(weekday) is None:
-            if len(color_map) < len(COLORS):
-                color_map[weekday] = COLORS[len(color_map)]
-            else:
-                default_colors = True
-        graph_data.append({
-            'Day': day,
-            'FullTime': __to_integer(start_datetime),
-            'Start': start_time,
-            'Finish': end_time,
-            'Weekday': weekday,
-            'Text': f'{start_time.strftime("%H:%M")}-{end_time.strftime("%H:%M")}'
-        })
-
-    df = pd.DataFrame(graph_data).sort_values(by='FullTime', ignore_index=True)
-    fig = px.timeline(df, x_start="Start", x_end="Finish", y="Day", text='Text', color='Weekday',
-                      color_discrete_map=None if default_colors else color_map, width=2048, height=1080)
-    fig.update_xaxes(tickvals=[f'{start_date}T{h}:00:00' for h in range(24)])
-
-    fig.write_image(f'images/{safe_file_name}.png')
-
-
-def draw_my_week(session: Session, safe_file_name: str):
+def draw_my_week(session: Session, safe_file_name: str) -> bool:
     color_map = dict()
     graph_data = []
     default_colors = False
@@ -158,12 +126,21 @@ def draw_my_week(session: Session, safe_file_name: str):
             continue
         start_datetime = datetime.fromisoformat(sport['start'])
         end_datetime = datetime.fromisoformat(sport['end'])
-        start_time = datetime(hour=start_datetime.hour, minute=start_datetime.minute, day=start.day, month=start.month,
-                              year=start.year)
-        end_time = datetime(hour=end_datetime.hour, minute=end_datetime.minute, day=start.day, month=start.month,
-                            year=start.year)
-        day = datetime(day=start_datetime.day, month=start_datetime.month, year=start_datetime.year).strftime(
-            '%Y/%m/%d')
+        start_time = datetime(
+            hour=start_datetime.hour,
+            minute=start_datetime.minute,
+            day=start.day,
+            month=start.month,
+            year=start.year
+        )
+        end_time = datetime(
+            hour=end_datetime.hour,
+            minute=end_datetime.minute,
+            day=start.day,
+            month=start.month,
+            year=start.year
+        )
+        day = start_datetime.strftime('%Y/%m/%d')
 
         if color_map.get(sport['title']) is None:
             if len(color_map) < len(COLORS):
@@ -171,33 +148,35 @@ def draw_my_week(session: Session, safe_file_name: str):
             else:
                 default_colors = True
         graph_data.append({
-            'Day': day,
+            'Day': day + ' (' + calendar.day_name[start_datetime.weekday()] + ')',
             'FullTime': __to_integer(start_datetime),
             'Start': start_time,
             'Finish': end_time,
             'Title': sport['title'],
             'Text': f'{start_time.strftime("%H:%M")}-{end_time.strftime("%H:%M")}'
         })
-
-    df = pd.DataFrame(graph_data).sort_values(by='FullTime', ignore_index=True)
+    if not graph_data:
+        return False
+    df = pd.DataFrame(graph_data)
     fig = px.timeline(df, x_start="Start", x_end="Finish", y="Day", text='Text', color='Title',
                       color_discrete_map=None if default_colors else color_map, width=2048, height=1080)
-    fig.update_xaxes(tickvals=[f'{start_date}T{h}:00:00' for h in range(24)])
+    fig.update_xaxes(showticklabels=False)
     fig.update_layout(
         font=dict(size=30)
     )
 
     fig.write_image(f'images/{safe_file_name}.png')
+    return True
 
 
-def generate_today_image(session: Session):
-    generate_date_image(get_today(), session)
+def generate_today_image(user_id: int, session: Session) -> bool:
+    return generate_date_image(get_today(), user_id, session)
 
 
-def generate_date_image(date: str, session: Session):
-    if isfile(f'images/{date}.png'):
-        return
-    draw_day(session=session, current_date=date, safe_file_name=date)
+def generate_date_image(date: str, user_id: int, session: Session, rewrite: bool = False) -> bool:
+    if isfile(f'images/{user_id}.png') and not rewrite:
+        return True
+    return draw_day(session=session, current_date=date, safe_file_name=str(user_id))
 
 
 def generate_date_inline(date: str):
@@ -210,8 +189,9 @@ def generate_date_inline(date: str):
 
 def generate_my_inline(date: str):
     return generate_inline_markup(
+        {'text': 'Update info', 'callback_data': f'my/{date}'},
         {'text': 'Set autocheckin', 'callback_data': 'auto'},
-        {'text': '« Back', 'callback_data': f'upd/{date}'}
+        {'text': '« Back', 'callback_data': f'date/{date}'}
     )
 
 
@@ -231,12 +211,17 @@ def generate_my_caption(session: Session):
 def generate_date_courses_buttons(date: str, session: Session):
     res = []
     sports = api.get_full_day(session, date)
-    unique_sports = {(sport['title'], sport['extendedProps']['group_id']) for sport in sports}
+    used = dict()
+    unique_sports = [(sport['title'], sport['extendedProps']['group_id']) for sport in sports]
     for unique in unique_sports:
+        if used.get(unique[0]):
+            continue
         res.append({
             'text': unique[0],
             'callback_data': f'gid/{date}/{unique[1]}'
         })
+        used[unique[0]] = True
+    res = res[::-1]
     res.append({'text': '« Back', 'callback_data': f'date/{date}'})
     return generate_inline_markup(*res)
 
@@ -260,3 +245,16 @@ def generate_date_group_time_buttons(date: str, group_id: int, session: Session)
         })
     res.append({'text': '« Back', 'callback_data': f'ckin/{date}'})
     return generate_inline_markup(*res)
+
+
+def generate_group_time_caption(group_id: int, session: Session):
+    teachers = api.get_teachers(session, group_id)
+    teacher_markdown = []
+    for teacher in teachers:
+        full_name = translit(teacher['trainer_first_name'] + ' ' + teacher['trainer_last_name'], language_code='ru', reversed=True)
+        # teacher['trainer_email']
+        teacher_markdown.append(
+            f'{full_name} {teacher["trainer_email"]}'
+        )
+    teacher_markdown = '\n'.join(teacher_markdown)
+    return f"Teachers emails:\n{teacher_markdown}\n\nSelect time when you want to checkin:\n\n"

@@ -7,6 +7,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.types.input_media import InputMediaPhoto
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.utils.exceptions import MessageNotModified
 from aiogram.dispatcher import FSMContext
 from requests.exceptions import ContentDecodingError, ConnectionError, RetryError
 
@@ -108,15 +109,16 @@ async def process_email(message: Message, state: FSMContext):
 
 @dp.message_handler(state=Registration.password)
 async def process_password(message: Message, state: FSMContext):
+    user_id = message.from_user.id
     await bot.delete_message(message.chat.id, message.message_id)
     async with state.proxy() as data:
         try:
             session = api.login_user(email=data.get('email'), password=message.text)
             database.create_user(user_id=message.from_user.id, student_id=session.cookies['student_id'], session_id=session.cookies['sessionid'], csrftoken=session.cookies['csrftoken'])
-            SESSIONS[message.from_user.id] = session
-            generators.generate_today_image(session)
-            await bot.send_message(message.from_user.id, 'You logged in successfully!')
-            with open(f'images/{generators.get_today()}.png', 'rb') as file:
+            SESSIONS[user_id] = session
+            generators.generate_today_image(user_id, session)
+            await bot.send_message(user_id, 'You logged in successfully!')
+            with open(f'images/{user_id}.png', 'rb') as file:
                 await bot.send_photo(
                     chat_id=message.from_user.id,
                     caption=generators.generate_date_caption(generators.get_today()),
@@ -138,6 +140,9 @@ async def process_password(message: Message, state: FSMContext):
         except ConnectionError as ex:
             await Registration.first()
             await bot.send_message(message.from_user.id, 'Sorry, sport server is down. Please try again later.\nSend me your email one more time:')
+        except Exception as ex:
+            await Registration.first()
+            await bot.send_message(message.from_user.id, "Something went wrong with your authentication, please contact @cutefluffyfox or try again (probably won't help):\nSend your innopolis email:")
 
 
 @dp.message_handler(lambda m: not update_session(m.from_user.id))
@@ -161,34 +166,22 @@ async def session_problem(message: Message):
     await Registration.email.set()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('upd/'))
-async def update_image(callback_query: CallbackQuery):
-    date = callback_query.data.split('/')[1]
-    user_id = callback_query.from_user.id
-    generators.generate_date_image(date, SESSIONS.get(user_id))
-    with open(f'images/{date}.png', 'rb') as file:
-        await bot.edit_message_media(
-            chat_id=callback_query.message.chat.id,
-            message_id=callback_query.message.message_id,
-            media=InputMediaPhoto(file, caption=generators.generate_date_caption(date), parse_mode='Markdown'),
-            reply_markup=generators.generate_date_inline(date)
-        )
-    await callback_query.answer('Image is up to date')
-
-
 @dp.callback_query_handler(lambda c: c.data.startswith('my/'))
 async def my_image(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
     user_id = callback_query.from_user.id
-    generators.draw_my_week(SESSIONS.get(user_id), user_id)
-    with open(f'images/{user_id}.png', 'rb') as file:
-        await bot.edit_message_media(
-            chat_id=callback_query.message.chat.id,
-            message_id=callback_query.message.message_id,
-            media=InputMediaPhoto(file, caption=generators.generate_my_caption(SESSIONS.get(user_id)), parse_mode='Markdown'),
-            reply_markup=generators.generate_my_inline(date)
-        )
-    await callback_query.answer('Your sport types are showed')
+    contains = generators.draw_my_week(SESSIONS.get(user_id), user_id)
+    try:
+        with open(f'images/{user_id if contains else "sleep"}.png', 'rb') as file:
+            await bot.edit_message_media(
+                chat_id=callback_query.message.chat.id,
+                message_id=callback_query.message.message_id,
+                media=InputMediaPhoto(file, caption=generators.generate_my_caption(SESSIONS.get(user_id)), parse_mode='Markdown'),
+                reply_markup=generators.generate_my_inline(date)
+            )
+    except MessageNotModified as ex:
+        pass
+    await callback_query.answer('Your statistics')
 
 
 @dp.callback_query_handler(lambda c: c.data == 'change')
@@ -209,8 +202,8 @@ async def change_day(callback_query: CallbackQuery):
 async def select_day(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
     user_id = callback_query.from_user.id
-    generators.generate_date_image(date, SESSIONS.get(user_id))
-    with open(f'images/{date}.png', 'rb') as file:
+    contains = generators.generate_date_image(date, user_id, SESSIONS.get(user_id), rewrite=True)
+    with open(f'images/{user_id if contains else "free"}.png', 'rb') as file:
         await bot.edit_message_media(
             chat_id=callback_query.message.chat.id,
             message_id=callback_query.message.message_id,
@@ -224,7 +217,6 @@ async def select_day(callback_query: CallbackQuery):
 async def select_type(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
     user_id = callback_query.from_user.id
-    generators.generate_today_image(SESSIONS.get(user_id))
     await bot.edit_message_caption(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
@@ -239,12 +231,11 @@ async def select_time(callback_query: CallbackQuery):
     _, date, group_id = callback_query.data.split('/')
     group_id = int(group_id)
     user_id = callback_query.from_user.id
-    generators.generate_today_image(SESSIONS.get(user_id))
     await bot.edit_message_caption(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
-        caption='Select time when you want to checkin',
-        reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id))
+        caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)),
+        reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id)),
     )
     await callback_query.answer('Select time')
 
@@ -255,7 +246,7 @@ async def auto_menu(callback_query: CallbackQuery):
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('tid/'))
-async def select_time(callback_query: CallbackQuery):
+async def selected(callback_query: CallbackQuery):
     training_id = int(callback_query.data.split('/')[1])
     user_id = callback_query.from_user.id
 
@@ -268,17 +259,20 @@ async def select_time(callback_query: CallbackQuery):
         else:
             await callback_query.answer('You cannot check in to this training')
             return
-        training = api.get_training_info(SESSIONS.get(user_id), training_id)
 
+        training = api.get_training_info(SESSIONS.get(user_id), training_id)
         date = training['training']['start'].split('T')[0]
         group_id = training['training']['group']['id']
+        contains = generators.generate_date_image(date, user_id, SESSIONS.get(user_id), rewrite=True)
 
-        await bot.edit_message_caption(
-            chat_id=callback_query.message.chat.id,
-            message_id=callback_query.message.message_id,
-            caption='Select time when you want to checkin:',
-            reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id))
-        )
+        with open(f'images/{user_id if contains else "free"}.png', 'rb') as file:
+            await bot.edit_message_media(
+                chat_id=callback_query.message.chat.id,
+                message_id=callback_query.message.message_id,
+                media=InputMediaPhoto(file, caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)), parse_mode='Markdown'),
+                reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id))
+            )
+
         await callback_query.answer('Successfully changed status')
     except Exception as ex:
         await callback_query.answer('Some error occurred, please try again later', show_alert=True)
@@ -296,8 +290,8 @@ async def start(message: Message):
 @dp.message_handler()
 async def unknown_message(message: Message):
     user_id = message.from_user.id
-    generators.generate_today_image(SESSIONS.get(user_id))
-    with open(f'images/{generators.get_today()}.png', 'rb') as file:
+    contains = generators.generate_today_image(user_id, SESSIONS.get(user_id))
+    with open(f'images/{user_id if contains else "sleep"}.png', 'rb') as file:
         await bot.send_photo(
             chat_id=message.from_user.id,
             caption=generators.generate_date_caption(generators.get_today()),
