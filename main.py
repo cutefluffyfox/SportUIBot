@@ -61,14 +61,15 @@ async def server_is_down(message: Message):
 
 @dp.callback_query_handler(lambda c: not update_session(c.from_user.id))
 async def session_problem(callback_query: CallbackQuery):
-    chat_id = callback_query.message.chat.id
     user_id = callback_query.from_user.id
     if SESSIONS.get(user_id):
-        await bot.delete_message(chat_id=chat_id, message_id=callback_query.message.message_id)
-        await bot.send_message(
-            chat_id=user_id,
-            text="Your session expired, please login to continue. Enter your email:"
-        )
+        with open(f'images/dead_session.png', 'rb') as file:
+            await bot.edit_message_media(
+                chat_id=callback_query.message.chat.id,
+                message_id=callback_query.message.message_id,
+                media=InputMediaPhoto(file,
+                                      caption="Your session expired, please login to continue. Enter your email:")
+            )
     else:
         await bot.send_message(
             chat_id=user_id,
@@ -78,8 +79,9 @@ async def session_problem(callback_query: CallbackQuery):
                  "check in you, collect statistics! "
                  "Let's get started. First I need your innopolis.university email:"
         )
-    await Registration.email.set()
+
     await callback_query.answer('Updated')
+    await Registration.email.set()
 
 
 @dp.message_handler(commands=['start', 'login'])

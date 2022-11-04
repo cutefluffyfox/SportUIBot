@@ -130,6 +130,7 @@ dmypy.json
 
 # Sandbox environment
 sandbox.py
+sandbox_server.py
 
 # Firebase connection
 firebase-adminsdk.json
