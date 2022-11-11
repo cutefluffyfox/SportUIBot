@@ -1,4 +1,3 @@
-import dill as pickle
 from requests.sessions import Session, session
 import firebase_admin
 from firebase_admin import db
@@ -47,3 +46,41 @@ def remove_user(user_id: int):
 def get_user(user_id: int) -> OrderedDict or None:
     ref = db.reference(f'/users/{user_id}')
     return ref.get()
+
+
+def get_users() -> list:
+    ref = db.reference(f'/users')
+    data = ref.get()
+    return [int(elem) for elem in data] if data else []
+
+
+def get_notification_users(training_id: int):
+    ref = db.reference(f'/notifications/{training_id}')
+    data = ref.get()
+    return list(data.values()) if data else []
+
+
+def add_user_notification(training_id: int, user_id: int):
+    ref = db.reference(f'/notifications/{training_id}')
+    ref.push(user_id)
+
+
+def remove_user_notification(training_id: int, user_id: int):
+    ref = db.reference(f'/notifications/{training_id}')
+    res = ref.get()
+    for (key, value) in res.items() if res else []:
+        if value == user_id:
+            ref = db.reference(f'/notifications/{training_id}/{key}')
+            ref.delete()
+            return
+
+
+def get_notifications() -> list:
+    ref = db.reference(f'/notifications')
+    data = ref.get()
+    return [int(elem) for elem in data] if data else []
+
+
+def remove_notification(training_id: int):
+    ref = db.reference(f'/notifications/{training_id}')
+    ref.delete()

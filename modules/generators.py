@@ -4,7 +4,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 from transliterate import translit
 from os.path import isfile
-from modules import api
+from modules import api, database
 import pandas as pd
 import calendar
 
@@ -37,8 +37,11 @@ def generate_inline_markup(*args) -> InlineKeyboardMarkup:
     Generate inline markup by list of dicts with parameters
     """
     keyboard = InlineKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    for button in args:
-        keyboard.add(InlineKeyboardButton(**button))
+    for element in args:
+        if type(element) == dict:
+            keyboard.add(InlineKeyboardButton(**element))
+        else:
+            keyboard.add(*[InlineKeyboardButton(**button) for button in element])
     return keyboard
 
 
@@ -107,7 +110,7 @@ def draw_day(session: Session, current_date: str, safe_file_name: str) -> bool:
     fig.update_xaxes(tickvals=[f'{current_date}T{h}:00:00' for h in range(24)])
     fig.update_layout(
         showlegend=False,
-        font=dict(size=15)
+        font=dict(size=14)
     )
 
     fig.write_image(f'images/{safe_file_name}.png')
@@ -179,6 +182,14 @@ def generate_date_image(date: str, user_id: int, session: Session, rewrite: bool
     return draw_day(session=session, current_date=date, safe_file_name=str(user_id))
 
 
+def generate_confirmation_inline():
+    return generate_inline_markup(
+        {'text': 'Yes, I am sure', 'callback_data': 'conf/sure'},
+        {'text': 'No', 'callback_data': f'conf/no'},
+    )
+
+
+
 def generate_date_inline(date: str):
     return generate_inline_markup(
         {'text': 'My sports', 'callback_data': f'my/{date}'},
@@ -226,24 +237,43 @@ def generate_date_courses_buttons(date: str, session: Session):
     return generate_inline_markup(*res)
 
 
-def generate_date_group_time_buttons(date: str, group_id: int, session: Session):
+def generate_date_group_time_buttons(date: str, group_id: int, session: Session, user_id: int):
     res = []
     sports = api.get_full_day(session, date)
-    unique_sports = [sport for sport in sports if sport['extendedProps']['group_id'] == group_id]
-    for sport in unique_sports:
+    trainings = [sport for sport in sports if sport['extendedProps']['group_id'] == group_id]
+    for sport in trainings:
         training_info = api.get_training_info(session, sport['extendedProps']['id'])
-        symbol = ""
-        if sport['extendedProps']['checked_in']:
-            symbol = "✅"
-        elif not sport['extendedProps']['can_check_in']:
-            symbol = "❌"
+        training_id = training_info['training']['id']
+        notified_users = database.get_notification_users(training_id)
+
         capacity = training_info['training']['group']['capacity']
         load = capacity - training_info['training']['load']
-        res.append({
-            'text': f"{sport['start'].split('T')[1].split('+')[0]}-{sport['end'].split('T')[1].split('+')[0]} ({load}/{capacity}) {symbol}",
-            'callback_data': f'tid/{sport["extendedProps"]["id"]}'
-        })
-    res.append({'text': '« Back', 'callback_data': f'ckin/{date}'})
+
+        l_symbol = r_symbol = ""
+        if sport['extendedProps']['checked_in']:
+            r_symbol = "✅"
+        elif not sport['extendedProps']['can_check_in']:
+            r_symbol = "❌"
+            if load == 0:
+                l_symbol = '🔔' if user_id in notified_users else '🔕'
+        res.append([
+            {
+                'text': f"{sport['start'].split('T')[1].split('+')[0][:-3]}-{sport['end'].split('T')[1].split('+')[0][:-3]} ({load}/{capacity}) {r_symbol}",
+                'callback_data': f'tid/{sport["extendedProps"]["id"]}',
+                'time': datetime.fromisoformat(sport['start']).timestamp()
+            }
+            ]
+        )
+        if l_symbol:
+            res[-1].append(
+                {
+                    'text': f"Notification {'on' if user_id in notified_users else 'off'} {l_symbol} ",
+                    'callback_data': f'ntid/{sport["extendedProps"]["id"]}',
+                    'time': datetime.now().timestamp()
+                }
+            )
+    res.sort(key=lambda a: a[0]['time'])
+    res.append([{'text': '« Back', 'callback_data': f'ckin/{date}'}])
     return generate_inline_markup(*res)
 
 
@@ -252,7 +282,6 @@ def generate_group_time_caption(group_id: int, session: Session):
     teacher_markdown = []
     for teacher in teachers:
         full_name = translit(teacher['trainer_first_name'] + ' ' + teacher['trainer_last_name'], language_code='ru', reversed=True)
-        # teacher['trainer_email']
         teacher_markdown.append(
             f'{full_name} {teacher["trainer_email"]}'
         )

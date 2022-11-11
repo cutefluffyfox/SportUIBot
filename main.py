@@ -1,5 +1,8 @@
+import datetime
 import logging
+import atexit
 from os import getenv
+import calendar
 
 import dotenv
 from aiogram import Bot, Dispatcher, executor
@@ -10,6 +13,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils.exceptions import MessageNotModified
 from aiogram.dispatcher import FSMContext
 from requests.exceptions import ContentDecodingError, ConnectionError, RetryError
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from modules import api, database, generators
 
@@ -25,10 +29,16 @@ logging.basicConfig(
 # Initialize environment variables from .env file (if it exists)
 dotenv.load_dotenv(dotenv.find_dotenv())
 BOT_TOKEN = getenv('BOT_TOKEN')
+ADMIN_ID = getenv('ADMIN_ID')
 
 # Check that critical variables are defined
 if BOT_TOKEN is None:
     logging.critical('No BOT_TOKEN variable found in project environment')
+if ADMIN_ID is None:
+    logging.critical('No ADMIN_ID variable found in project environment')
+else:
+    ADMIN_ID = int(ADMIN_ID)
+
 
 # Initialize bot and dispatcher
 bot = Bot(token=BOT_TOKEN)
@@ -41,6 +51,46 @@ SESSIONS = dict()
 class Registration(StatesGroup):
     email = State()
     password = State()
+
+
+class BroadcastInfo(StatesGroup):
+    message = State()
+    confirmation = State()
+
+
+async def handle_notifications():
+    if not update_session(ADMIN_ID):
+        SESSIONS[ADMIN_ID] = api.login_user(getenv('ADMIN_EMAIL'), getenv('ADMIN_PSW'))
+    notifications = database.get_notifications()
+    for training_id in notifications:
+        training_info = api.get_training_info(session=SESSIONS.get(ADMIN_ID), training_id=training_id)
+        start_time = datetime.datetime.fromisoformat(training_info['training']['start'])
+        capacity = training_info['training']['group']['capacity']
+        load = capacity - training_info['training']['load']
+
+        if start_time.timestamp() >= datetime.datetime.now().timestamp():
+            database.remove_notification(training_id)
+        elif load > 0:
+            notification_users = database.get_notification_users(training_id)
+            training_name = training_info['training']['group']['name']
+            training_time = start_time.strftime("%H:%M")
+            training_day = start_time.strftime('%d/%m/%Y')
+            weekday = calendar.day_name[start_time.weekday()]
+            text = f"There is one available place for a {training_name} at {training_time} on {weekday} ({training_day}) ! Check-in ASAP!\nThis message has been sent to {len(notification_users) - 1} more people"
+            for user_id in notification_users:
+                try:
+                    await bot.send_message(chat_id=user_id, text=text)
+                except Exception as ex:
+                    pass
+            database.remove_notification(training_id)
+
+
+scheduler = AsyncIOScheduler()
+scheduler.add_job(func=handle_notifications, trigger="interval", minutes=2)
+scheduler.start()
+
+# Shut down the scheduler when exiting the app
+atexit.register(lambda: scheduler.shutdown())
 
 
 def update_session(user_id: int) -> bool:
@@ -237,7 +287,7 @@ async def select_time(callback_query: CallbackQuery):
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
         caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)),
-        reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id)),
+        reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id), user_id),
     )
     await callback_query.answer('Select time')
 
@@ -247,20 +297,28 @@ async def auto_menu(callback_query: CallbackQuery):
     await callback_query.answer('This feature is under development stage. For more information contact @cutefluffyfox', show_alert=True)
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('tid/'))
+@dp.callback_query_handler(lambda c: c.data.startswith('tid/') or c.data.startswith('ntid/'))
 async def selected(callback_query: CallbackQuery):
     training_id = int(callback_query.data.split('/')[1])
     user_id = callback_query.from_user.id
+    callback_type = callback_query.data.split('/')[0]
 
     try:
         training = api.get_training_info(SESSIONS.get(user_id), training_id)
-        if training['can_check_in'] and not training['checked_in']:
-            api.checkin(SESSIONS.get(user_id), training_id)
-        elif training['checked_in']:
-            api.cancel_checkin(SESSIONS.get(user_id), training_id)
+        if callback_type == 'tid':
+            if training['can_check_in'] and not training['checked_in']:
+                api.checkin(SESSIONS.get(user_id), training_id)
+            elif training['checked_in']:
+                api.cancel_checkin(SESSIONS.get(user_id), training_id)
+            else:
+                await callback_query.answer('Free seats for this workout are over, but you can turn on notifications to get information when at least one seat appears', show_alert=True)
+                return
         else:
-            await callback_query.answer('You cannot check in to this training')
-            return
+            notified_users = database.get_notification_users(training_id)
+            if user_id in notified_users:
+                database.remove_user_notification(training_id, user_id)
+            else:
+                database.add_user_notification(training_id, user_id)
 
         training = api.get_training_info(SESSIONS.get(user_id), training_id)
         date = training['training']['start'].split('T')[0]
@@ -272,10 +330,10 @@ async def selected(callback_query: CallbackQuery):
                 chat_id=callback_query.message.chat.id,
                 message_id=callback_query.message.message_id,
                 media=InputMediaPhoto(file, caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)), parse_mode='Markdown'),
-                reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id))
+                reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id), user_id)
             )
 
-        await callback_query.answer('Successfully changed status')
+        await callback_query.answer('Notification status changed' if callback_type == 'ntid' else 'Information updated')
     except Exception as ex:
         await callback_query.answer('Some error occurred, please try again later', show_alert=True)
 
@@ -287,6 +345,50 @@ async def start(message: Message):
         SESSIONS[user_id] = None
     database.remove_user(user_id)
     await message.reply("Your session information successfully deleted from the database")
+
+
+@dp.message_handler(lambda msg: str(msg.from_user.id) == getenv('ADMIN_ID'), commands=['kill'])
+async def kill_application(message: Message):
+    await bot.send_message(chat_id=message.chat.id, text='Killing initiated')
+    dp.stop_polling()
+    exit(0)
+
+
+@dp.message_handler(lambda msg: str(msg.from_user.id) == getenv('ADMIN_ID'), commands=['broadcast'])
+async def broadcast_message(message: Message):
+    await bot.send_message(chat_id=message.chat.id, text='Please send message that you want to broadcast to users')
+    await BroadcastInfo.message.set()
+
+
+@dp.message_handler(state=BroadcastInfo.message)
+async def process_message(message: Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['message'] = message.text
+    await BroadcastInfo.next()
+    user_amount = len(database.get_users())
+    await message.reply(
+        text=f"You sure you want to broadcast this message to *{user_amount}* users?",
+        parse_mode="Markdown",
+        reply_markup=generators.generate_confirmation_inline()
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith('conf/'), state=BroadcastInfo.confirmation)
+async def selected_confirmation_result(callback_query: CallbackQuery, state: FSMContext):
+    await bot.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    choice = callback_query.data.split('/')[1]
+    if choice == 'sure':
+        users = database.get_users()
+        fail = 0
+        async with state.proxy() as data:
+            for user_id in users:
+                try:
+                    await bot.send_message(chat_id=user_id, text=data['message'])
+                except Exception as ex:
+                    fail += 1
+        await bot.send_message(chat_id=callback_query.from_user.id, text=f'Amount of users: {len(users)}\nFailed attempts: {fail}')
+    await state.finish()
+    await callback_query.answer('Complete')
 
 
 @dp.message_handler()
