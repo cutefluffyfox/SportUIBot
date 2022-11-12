@@ -23,7 +23,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)-8s %(message)s',
     level=logging.INFO,
     datefmt='%Y-%m-%d %H:%M:%S',
-    # filename="logs.log"
+    filename="logs.log"
 )
 
 # Initialize environment variables from .env file (if it exists)
@@ -58,35 +58,50 @@ class BroadcastInfo(StatesGroup):
     confirmation = State()
 
 
+async def send_users(users: list, text: str, reply_markup=None):
+    logging.info('Auto-broadcast mode activated')
+    for user_id in users:
+        try:
+            await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+        except Exception:
+            pass
+
+
 async def handle_notifications():
     if not update_session(ADMIN_ID):
+        logging.warning('Admin session died')
         SESSIONS[ADMIN_ID] = api.login_user(getenv('ADMIN_EMAIL'), getenv('ADMIN_PSW'))
     notifications = database.get_notifications()
     for training_id in notifications:
         training_info = api.get_training_info(session=SESSIONS.get(ADMIN_ID), training_id=training_id)
-        start_time = datetime.datetime.fromisoformat(training_info['training']['start'])
+        end_time = datetime.datetime.fromisoformat(training_info['training']['end'])
         capacity = training_info['training']['group']['capacity']
         load = capacity - training_info['training']['load']
 
-        if start_time.timestamp() >= datetime.datetime.now().timestamp():
+        if end_time.timestamp() <= datetime.datetime.now().timestamp():
+            notification_users = database.get_notification_users(training_id)
+            logging.info(f'Notification expired for {training_id} and {len(notification_users)} users')
+            training_name = training_info['training']['group']['name']
+            training_time = end_time.strftime("%H:%M")
+            training_day = end_time.strftime('%d/%m/%Y')
+            weekday = calendar.day_name[end_time.weekday()]
+            text = f'Sorry, but no free spaces appeared for a {training_name} at {training_time} on {weekday} ({training_day}).\nNot to got into the same situation again see autocheckin feature in `My sports`'
+            await send_users(notification_users, text)
             database.remove_notification(training_id)
         elif load > 0:
             notification_users = database.get_notification_users(training_id)
+            logging.info(f'Notification succeed for {training_id} and users {len(notification_users)}')
             training_name = training_info['training']['group']['name']
-            training_time = start_time.strftime("%H:%M")
-            training_day = start_time.strftime('%d/%m/%Y')
-            weekday = calendar.day_name[start_time.weekday()]
+            training_time = end_time.strftime("%H:%M")
+            training_day = end_time.strftime('%d/%m/%Y')
+            weekday = calendar.day_name[end_time.weekday()]
             text = f"There is one available place for a {training_name} at {training_time} on {weekday} ({training_day}) ! Check-in ASAP!\nThis message has been sent to {len(notification_users) - 1} more people"
-            for user_id in notification_users:
-                try:
-                    await bot.send_message(chat_id=user_id, text=text)
-                except Exception as ex:
-                    pass
+            await send_users(notification_users, text, generators.generate_inline_markup({'text': '‼️Check-in ‼', 'callback_data': f'rawckin/{training_id}'}))
             database.remove_notification(training_id)
 
 
 scheduler = AsyncIOScheduler()
-scheduler.add_job(func=handle_notifications, trigger="interval", minutes=2)
+scheduler.add_job(func=handle_notifications, trigger="interval", seconds=10)
 scheduler.start()
 
 # Shut down the scheduler when exiting the app
@@ -338,6 +353,39 @@ async def selected(callback_query: CallbackQuery):
         await callback_query.answer('Some error occurred, please try again later', show_alert=True)
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith('rawckin/') or c.data.startswith('rawnid/'))
+async def raw_checkin(callback_query: CallbackQuery):
+    training_id = int(callback_query.data.split('/')[1])
+    user_id = callback_query.from_user.id
+    callback_type = callback_query.data.split('/')[0]
+
+    training_info = api.get_training_info(SESSIONS.get(user_id), training_id)
+    if callback_type == 'rawckin':
+        if training_info['can_check_in'] and not training_info['checked_in']:
+            api.checkin(SESSIONS.get(user_id), training_id)
+            await bot.delete_message(
+                chat_id=user_id,
+                message_id=callback_query.message.message_id
+            )
+        else:
+            await callback_query.answer(
+                'Free seats for this workout are over, but you can turn on notifications to get information when at least one seat appears',
+                show_alert=True
+            )
+            await bot.edit_message_reply_markup(
+                chat_id=user_id,
+                message_id=callback_query.message.message_id,
+                reply_markup=generators.generate_inline_markup({'text': 'Notify me 🔔', 'callback_data': f'rawnid/{training_id}'})
+            )
+    else:
+        database.add_user_notification(training_id, user_id)
+        await bot.delete_message(
+            chat_id=user_id,
+            message_id=callback_query.message.message_id
+        )
+        await callback_query.answer('Success')
+
+
 @dp.message_handler(commands=['logout'])
 async def start(message: Message):
     user_id = message.from_user.id
@@ -349,6 +397,7 @@ async def start(message: Message):
 
 @dp.message_handler(lambda msg: str(msg.from_user.id) == getenv('ADMIN_ID'), commands=['kill'])
 async def kill_application(message: Message):
+    logging.critical('Attempt to kill bot')
     await bot.send_message(chat_id=message.chat.id, text='Killing initiated')
     dp.stop_polling()
     exit(0)
@@ -387,6 +436,7 @@ async def selected_confirmation_result(callback_query: CallbackQuery, state: FSM
                 except Exception as ex:
                     fail += 1
         await bot.send_message(chat_id=callback_query.from_user.id, text=f'Amount of users: {len(users)}\nFailed attempts: {fail}')
+        logging.info(f'Broadcast message for {len(users)} users with {fail} users failed')
     await state.finish()
     await callback_query.answer('Complete')
 
