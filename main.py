@@ -22,8 +22,7 @@ from modules import api, database, generators
 logging.basicConfig(
     format='%(asctime)s %(levelname)-8s %(message)s',
     level=logging.INFO,
-    datefmt='%Y-%m-%d %H:%M:%S',
-    filename="logs.log"
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
 # Initialize environment variables from .env file (if it exists)
@@ -103,6 +102,7 @@ async def handle_notifications():
 scheduler = AsyncIOScheduler()
 scheduler.add_job(func=handle_notifications, trigger="interval", seconds=10)
 scheduler.start()
+logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
 
 # Shut down the scheduler when exiting the app
 atexit.register(lambda: scheduler.shutdown())
@@ -395,15 +395,16 @@ async def start(message: Message):
     await message.reply("Your session information successfully deleted from the database")
 
 
-@dp.message_handler(lambda msg: str(msg.from_user.id) == getenv('ADMIN_ID'), commands=['kill'])
+@dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['kill'])
 async def kill_application(message: Message):
     logging.critical('Attempt to kill bot')
-    await bot.send_message(chat_id=message.chat.id, text='Killing initiated')
-    dp.stop_polling()
-    exit(0)
+    if message.from_user.id == ADMIN_ID:
+        await bot.send_message(chat_id=message.chat.id, text='Killing initiated')
+        dp.stop_polling()
+        exit(12345678)
 
 
-@dp.message_handler(lambda msg: str(msg.from_user.id) == getenv('ADMIN_ID'), commands=['broadcast'])
+@dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['broadcast'])
 async def broadcast_message(message: Message):
     await bot.send_message(chat_id=message.chat.id, text='Please send message that you want to broadcast to users')
     await BroadcastInfo.message.set()
