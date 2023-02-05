@@ -1,3 +1,5 @@
+import logging
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from requests.sessions import Session
 import plotly.express as px
@@ -7,7 +9,7 @@ from os.path import isfile
 from modules import api, database
 import pandas as pd
 import calendar
-
+import json
 
 COLORS = [
     '#e6194B',
@@ -74,6 +76,12 @@ def __to_integer(dt_time):
 
 def __get_time(date: str) -> str:
     return date.split('T')[1].split('+')[0]
+
+
+def __adjust_text(text: str, char: str, size: int) -> str:
+    len_text = len(text)
+    just_size = (size - len_text - 2) // 2
+    return char * just_size + ' ' + text + ' ' + char * just_size
 
 
 def draw_day(session: Session, current_date: str, safe_file_name: str) -> bool:
@@ -189,7 +197,6 @@ def generate_confirmation_inline():
     )
 
 
-
 def generate_date_inline(date: str):
     return generate_inline_markup(
         {'text': 'My sports', 'callback_data': f'my/{date}'},
@@ -201,7 +208,7 @@ def generate_date_inline(date: str):
 def generate_my_inline(date: str):
     return generate_inline_markup(
         {'text': 'Update info', 'callback_data': f'my/{date}'},
-        {'text': 'Set autocheckin', 'callback_data': 'auto'},
+        {'text': 'Set autocheckin', 'callback_data': f'auto/{date}'},
         {'text': '« Back', 'callback_data': f'date/{date}'}
     )
 
@@ -262,7 +269,7 @@ def generate_date_group_time_buttons(date: str, group_id: int, session: Session,
                 'callback_data': f'tid/{sport["extendedProps"]["id"]}',
                 'time': datetime.fromisoformat(sport['start']).timestamp()
             }
-            ]
+        ]
         )
         if l_symbol:
             res[-1].append(
@@ -281,9 +288,111 @@ def generate_group_time_caption(group_id: int, session: Session):
     teachers = api.get_teachers(session, group_id)
     teacher_markdown = []
     for teacher in teachers:
-        full_name = translit(teacher['trainer_first_name'] + ' ' + teacher['trainer_last_name'], language_code='ru', reversed=True)
+        full_name = translit(teacher['trainer_first_name'] + ' ' + teacher['trainer_last_name'], language_code='ru',
+                             reversed=True)
         teacher_markdown.append(
             f'{full_name} {teacher["trainer_email"]}'
         )
     teacher_markdown = '\n'.join(teacher_markdown)
     return f"Teachers emails:\n{teacher_markdown}\n\nSelect time when you want to checkin:\n\n"
+
+
+def generate_auto_checkin_list_caption():
+    return f"Please select sport that you want to visit every week:"
+
+
+def generate_auto_checkin_list_markup(session: Session, date: str, user_id: int):
+    start_date = get_today()
+    end_date = get_shifted_day(8)
+
+
+    sport_to_id = dict()
+    for sport in api.get_full_time_period(session, start_date, end_date):
+        if not sport['extendedProps']['checked_in']:
+            continue
+        group_id = sport['extendedProps']['group_id']
+        weekday = datetime.fromisoformat(sport['start']).weekday()
+        start_time = datetime.fromisoformat(sport['start']).strftime('%H:%M')
+        end_time = datetime.fromisoformat(sport['end']).strftime('%H:%M')
+        parsed_string = f"{group_id}|{weekday}|{start_time}-{end_time}"
+        title = sport['title']
+
+        if sport_to_id.get(title) is None:
+            sport_to_id[title] = []
+        sport_to_id[title].append({'id': parsed_string, 'text': f'{calendar.day_name[weekday]} {start_time}-{end_time}'})
+
+    res = []
+    for sport_title in sport_to_id:
+        res.append([
+            {
+                'text': f'===== {sport_title} =====',
+                'callback_data': 'why'
+            }
+        ])
+        for training in sport_to_id[sport_title]:
+            auto_checked_in = database.check_auto_checkin(user_id, training['id'])
+            res.append([
+                {
+                    'text': f"{training['text']} " + ('🔁' if auto_checked_in else ''),
+                    'callback_data': f'aid/{date}/{training["id"]}'
+                }
+            ])
+
+    res.append([{'text': '« Back', 'callback_data': f'my/{date}'}])
+
+    return generate_inline_markup(*res)
+
+
+def parse_and_save_whole_semester(session: Session):
+    semester_start_end = api.get_semester_start_end_dates(session)
+    res = api.get_full_time_period(  # get whole semester trainings
+        session,
+        semester_start_end[0].strftime("%Y-%m-%d"),
+        semester_start_end[1].strftime("%Y-%m-%d")
+    )
+
+    res = sorted(res, key=lambda s: datetime.fromisoformat(s['start']))
+
+    # Drop non-required info
+    for sport in res:
+        sport.pop('allDay')
+        sport.pop('title')
+        sport['extendedProps'].pop('can_edit')
+        sport['extendedProps'].pop('can_grade')
+        sport['extendedProps'].pop('training_class')
+        sport['extendedProps'].pop('can_check_in')
+        sport['extendedProps'].pop('checked_in')
+        sport['start'] = sport['start'].split('+')[0]
+        sport['end'] = sport['end'].split('+')[0]
+
+    # Parse sport to have O(1) access to training id's by group_id/weekday/start-end time
+    parsed_sports = dict()
+    for sport in res:
+        start_time = datetime.fromisoformat(sport['start']).strftime('%H:%M')
+        end_time = datetime.fromisoformat(sport['end']).strftime('%H:%M')
+        weekday = datetime.fromisoformat(sport['start']).weekday()
+        group_id = sport['extendedProps']['group_id']
+
+        parsed_string = f"{group_id}/{weekday}/{start_time}-{end_time}"
+        if parsed_sports.get(parsed_string) is None:  # If this group appeared first time
+            parsed_sports[parsed_string] = []  # Create new key
+        parsed_sports[parsed_string].append(sport['extendedProps']['id'])  # Add training_id
+
+    with open('semester_trainings.json', 'w') as file:
+        file.write(json.dumps(parsed_sports, indent=4))
+
+
+def get_training_ids_to_auto_checkin(session: Session, training_key: str) -> list:
+    with open('semester_trainings.json', 'r') as file:
+        trainings = json.load(file)
+
+    if trainings.get(training_key) is None:  # In case when semester changed, we want all file to reload and be up-to-date
+        parse_and_save_whole_semester(session)
+        with open('semester_trainings.json', 'r') as file:
+            trainings = json.load(file)
+
+    if trainings.get(training_key) is None:  # If nothing found (strangely and should not happen), no ids are found
+        logging.warning(f'generator.py -> get_training_ids_to_auto_checkin -> no trainings found for key "{training_key}"')
+        return []
+
+    return trainings[training_key]

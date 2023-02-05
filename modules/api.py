@@ -1,9 +1,9 @@
-import pprint
-
 from requests.exceptions import ContentDecodingError, ConnectionError, RetryError
 from requests import session as create_request_session, get
 from requests.sessions import Session
 from bs4 import BeautifulSoup
+from datetime import datetime
+import calendar
 
 
 SERVER_URL = 'https://sport.innopolis.university'
@@ -86,4 +86,16 @@ def get_user_statistics(session: Session) -> dict:
 def get_teachers(session: Session, group_id: int) -> dict:
     return session.get(f'{SERVER_URL}/api/group/{group_id}').json()['trainers']
 
+
+def get_semester_start_end_dates(session: Session) -> list:
+    res = session.get(f'{SERVER_URL}/profile')
+    bs = BeautifulSoup(res.content, 'html.parser')
+    raw_table = bs.find('div', {'id': 'semester-hours'})
+    raw_row = raw_table.find_all('tr', limit=2)[1]
+    raw_semester_start_end = list(map(lambda a: a.text.replace(',', '').replace('.', '').split(), raw_row.find_all('td', limit=2)))
+    semester_start_end_datetime = [
+        datetime(year=int(day[2]), month=list(calendar.month_abbr).index(day[0]), day=int(day[1]))
+        for day in raw_semester_start_end
+    ]
+    return semester_start_end_datetime
 

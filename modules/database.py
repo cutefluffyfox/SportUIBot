@@ -84,3 +84,36 @@ def get_notifications() -> list:
 def remove_notification(training_id: int):
     ref = db.reference(f'/notifications/{training_id}')
     ref.delete()
+
+
+def get_auto_checkins() -> OrderedDict or None:
+    ref = db.reference(f'/auto_checkin')
+    return ref.get()
+
+
+def add_auto_checkin(user_id: int, training_string: str, training_ids: list) -> None:
+    ref = db.reference(f'/auto_checkin/{user_id}')
+    ref.child(training_string).set(training_ids)
+
+
+def remove_given_auto_checkin(user_id: int, training_string, training_id: int) -> None:
+    ref = db.reference(f'/auto_checkin/{user_id}/{training_string}')
+    training_ids: list = ref.get()
+    if training_id in training_ids:
+        training_ids.remove(training_id)
+    ref.set(training_ids)
+
+
+def get_user_auto_checkins(user_id: int) -> OrderedDict or None:
+    ref = db.reference(f'/auto_checkin/{user_id}')
+    return ref.get()
+
+
+def check_auto_checkin(user_id: int, training_string: str) -> bool:
+    ref = db.reference(f'/auto_checkin/{user_id}/{training_string}')
+    return ref.get() is not None
+
+
+def remove_auto_checkin(user_id: int, training_string: str) -> None:
+    ref = db.reference(f'/auto_checkin/{user_id}/{training_string}')
+    ref.delete()

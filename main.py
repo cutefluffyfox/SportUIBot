@@ -3,6 +3,7 @@ import logging
 import atexit
 from os import getenv
 import calendar
+import random
 
 import dotenv
 from aiogram import Bot, Dispatcher, executor
@@ -44,6 +45,7 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 SESSIONS = dict()
+LOGIN_REQUEST = dict()
 
 
 # States
@@ -99,8 +101,46 @@ async def handle_notifications():
             database.remove_notification(training_id)
 
 
+async def handle_check_in():
+    if not update_session(ADMIN_ID):
+        logging.warning('Admin session died')
+        SESSIONS[ADMIN_ID] = api.login_user(getenv('ADMIN_EMAIL'), getenv('ADMIN_PSW'))
+
+    auto_checkins = database.get_auto_checkins()
+    if auto_checkins is None:
+        return
+    for user_id in auto_checkins:
+
+        if not update_session(user_id):
+            if not LOGIN_REQUEST.get(user_id, False):
+                LOGIN_REQUEST[user_id] = True
+                with open(f'images/dead_session.png', 'rb') as file:
+                    await bot.send_photo(
+                        chat_id=user_id,
+                        caption='Your session died, please login one more time to keep your auto-checkin running',
+                        reply_markup=generators.generate_date_inline(generators.get_today()),
+                        photo=file
+                    )
+            continue
+
+        for training_key, sport_list in auto_checkins[user_id].items():
+            for training_id in sport_list:
+                training_info = api.get_training_info(SESSIONS.get(user_id), training_id)
+                if datetime.datetime.fromisoformat(training_info['training']['end'].split('+')[0]) < datetime.datetime.now():
+                    database.remove_given_auto_checkin(user_id, training_key, training_id)
+                    continue
+                if datetime.datetime.now() + datetime.timedelta(days=7) <= datetime.datetime.fromisoformat(training_info['training']['start'].split('+')[0]):
+                    break
+                load = training_info['training']['group']['capacity'] - training_info['training']['load']
+                if load > 0:
+                    api.checkin(SESSIONS.get(user_id), training_id)
+                    database.remove_given_auto_checkin(user_id, training_key, training_id)
+                break
+
+
 scheduler = AsyncIOScheduler()
 scheduler.add_job(func=handle_notifications, trigger="interval", seconds=10)
+scheduler.add_job(func=handle_check_in, trigger="interval", seconds=10)
 scheduler.start()
 logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
 
@@ -127,7 +167,12 @@ async def server_is_down(message: Message):
 @dp.callback_query_handler(lambda c: not update_session(c.from_user.id))
 async def session_problem(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
-    if SESSIONS.get(user_id):
+    if SESSIONS.get(user_id) and callback_query.message.photo is None:
+        await bot.send_message(
+            chat_id=user_id,
+            text="Your session expired, please login to continue. Enter your email:"
+        )
+    elif SESSIONS.get(user_id):
         with open(f'images/dead_session.png', 'rb') as file:
             await bot.edit_message_media(
                 chat_id=callback_query.message.chat.id,
@@ -215,6 +260,7 @@ async def process_password(message: Message, state: FSMContext):
 @dp.message_handler(lambda m: not update_session(m.from_user.id))
 async def session_problem(message: Message):
     user_id = message.from_user.id
+    LOGIN_REQUEST[user_id] = False
     if SESSIONS.get(user_id):
         await bot.send_message(
             chat_id=user_id,
@@ -307,9 +353,54 @@ async def select_time(callback_query: CallbackQuery):
     await callback_query.answer('Select time')
 
 
-@dp.callback_query_handler(lambda c: c.data == 'auto')
+@dp.callback_query_handler(lambda c: c.data.startswith('auto'))
 async def auto_menu(callback_query: CallbackQuery):
-    await callback_query.answer('This feature is under development stage. For more information contact @cutefluffyfox', show_alert=True)
+    date = callback_query.data.split('/')[1]
+    user_id = callback_query.from_user.id
+
+    await bot.edit_message_caption(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        caption=generators.generate_auto_checkin_list_caption(),
+        reply_markup=generators.generate_auto_checkin_list_markup(SESSIONS.get(user_id), date, user_id)
+    )
+    await callback_query.answer('Select training')
+
+
+@dp.callback_query_handler(lambda c: c.data == 'why')
+async def why_did_you_click_it(callback_query: CallbackQuery):
+    why_messages = [
+        'Why? Just why?'
+        'Why you clicked it?',
+        'Why would you do that?',
+        'How bored are you that you would actually click that random button?',
+        'Are you insane?',
+        'I am truly shocked that you are here reading this.',
+        "If you are serious, message me at @cutefluffyfox, and I'll see what I can do to help you.",
+        'You must be crazy.'
+    ]
+    await callback_query.answer(random.choice(why_messages), show_alert=True)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith('aid/'))
+async def set_auto_checkin(callback_query: CallbackQuery):
+    user_id = callback_query.from_user.id
+    _, date, training_key = callback_query.data.split('/')
+
+    auto_checked_in = database.check_auto_checkin(user_id, training_key)
+    if auto_checked_in:
+        database.remove_auto_checkin(user_id, training_key)
+    else:
+        training_ids = generators.get_training_ids_to_auto_checkin(SESSIONS.get(user_id), training_key.replace('|', '/'))
+        database.add_auto_checkin(user_id, training_key, training_ids)
+
+    await bot.edit_message_reply_markup(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        reply_markup=generators.generate_auto_checkin_list_markup(SESSIONS.get(user_id), date, user_id)
+    )
+
+    await callback_query.answer('Auto-checkin removed successfully' if auto_checked_in else 'Auto-checkin set successfully')
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('tid/') or c.data.startswith('ntid/'))
@@ -398,16 +489,34 @@ async def start(message: Message):
 @dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['kill'])
 async def kill_application(message: Message):
     logging.critical('Attempt to kill bot')
-    if message.from_user.id == ADMIN_ID:
+    if message.from_user.id == ADMIN_ID:  # useless if, but extra safety is nice
         await bot.send_message(chat_id=message.chat.id, text='Killing initiated')
         dp.stop_polling()
         exit(12345678)
+
+
+@dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['reload_semester'])
+async def kill_application(message: Message):
+    logging.critical('Reload semester_trainings.json file')
+    if message.from_user.id == ADMIN_ID:  # useless if, but extra safety is nice
+        generators.parse_and_save_whole_semester(SESSIONS.get(ADMIN_ID))
 
 
 @dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['broadcast'])
 async def broadcast_message(message: Message):
     await bot.send_message(chat_id=message.chat.id, text='Please send message that you want to broadcast to users')
     await BroadcastInfo.message.set()
+
+
+@dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['help'])
+async def kill_application(message: Message):
+    if message.from_user.id == ADMIN_ID:  # useless if, but extra safety is nice
+        await message.reply(
+            'You are admin, how you have forgotten your commands? Ok, let me explain:\n'
+            '/reload_semester - you will reload huge file that contains info about all trainings for current semester (used in auto-checkin)'
+            '/broadcast - you will open menu to send message to all users (statistic will be provided)'
+            '/kill - kill bot even if you are not connected to university wifi'
+        )
 
 
 @dp.message_handler(state=BroadcastInfo.message)
