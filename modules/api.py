@@ -55,6 +55,10 @@ def get_training_info(session: Session, training_id: int) -> dict:
     return session.get(f'{SERVER_URL}/api/training/{training_id}').json()
 
 
+def get_group_info(session: Session, group_id: int) -> dict:
+    return session.get(f'{SERVER_URL}/api/group/{group_id}').json()
+
+
 def checkin(session: Session, training_id: int) -> None:
     session.headers['Referer'] = f'{SERVER_URL}/profile/'
     session.headers['X-CSRFToken'] = session.cookies['csrftoken']

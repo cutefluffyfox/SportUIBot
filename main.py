@@ -126,15 +126,63 @@ async def handle_check_in():
         for training_key, sport_list in auto_checkins[user_id].items():
             for training_id in sport_list:
                 training_info = api.get_training_info(SESSIONS.get(user_id), training_id)
+
+                if training_info.get('detail') is not None:
+
+                    group_id, weekday, time = training_key.split('|')
+                    group_info = api.get_group_info(SESSIONS.get(ADMIN_ID), group_id)
+
+                    user_message = \
+                        f'Hello! Some changes to schedule was made and we found out that your sport ' \
+                        f'{group_info["group_name"]} on {calendar.day_name[int(weekday)]} at {time} is no longer ' \
+                        f'available for check-in. Please check new schedule for the day to see changes. Sorry for ' \
+                        f'inconvenience.'
+
+                    with open(f'images/something_happened.png', 'rb') as file:
+                        await bot.send_photo(
+                            chat_id=user_id,
+                            caption=user_message,
+                            parse_mode='Markdown',
+                            reply_markup=generators.generate_investigate_inline(),
+                            photo=file
+                        )
+
+                    database.remove_auto_checkin(user_id, training_key)
+                    generators.generate_auto_checkin_list_caption()
+                    break
                 if datetime.datetime.fromisoformat(training_info['training']['end'].split('+')[0]) < datetime.datetime.now():
                     database.remove_given_auto_checkin(user_id, training_key, training_id)
                     continue
-                if datetime.datetime.now() + datetime.timedelta(days=7) <= datetime.datetime.fromisoformat(training_info['training']['start'].split('+')[0]):
+
+                training_start = datetime.datetime.fromisoformat(training_info['training']['start'].split('+')[0])
+                if not training_info['can_check_in'] or datetime.datetime.now() + datetime.timedelta(days=7) <= training_start:
                     break
+
+                if training_info['checked_in']:
+                    database.remove_given_auto_checkin(user_id, training_key, training_id)
+                    continue
+
                 load = training_info['training']['group']['capacity'] - training_info['training']['load']
-                if load > 0:
+                if load > 0 and training_info['can_check_in'] and not training_info['checked_in']:
                     api.checkin(SESSIONS.get(user_id), training_id)
                     database.remove_given_auto_checkin(user_id, training_key, training_id)
+
+                    group_id, weekday, time = training_key.split('|')
+                    bot_info = await bot.get_me()
+
+                    user_message = \
+                        f'I checked you in to next {training_info["training"]["group"]["name"]} on ' \
+                        f'{calendar.day_name[int(weekday)]} at {time} ({training_start.strftime("%d/%m/%Y")}).\n' \
+                        f'Thanks for using @{bot_info["username"]}!'
+
+                    with open(f'images/jumping.png', 'rb') as file:
+                        await bot.send_photo(
+                            chat_id=user_id,
+                            caption=user_message,
+                            parse_mode='Markdown',
+                            reply_markup=generators.generate_investigate_inline(text='Check my schedule!'),
+                            photo=file
+                        )
                 break
 
 
@@ -226,7 +274,12 @@ async def process_password(message: Message, state: FSMContext):
     async with state.proxy() as data:
         try:
             session = api.login_user(email=data.get('email'), password=message.text)
-            database.create_user(user_id=message.from_user.id, student_id=session.cookies['student_id'], session_id=session.cookies['sessionid'], csrftoken=session.cookies['csrftoken'])
+            database.create_user(
+                user_id=message.from_user.id,
+                student_id=session.cookies['student_id'],
+                session_id=session.cookies['sessionid'],
+                csrftoken=session.cookies['csrftoken']
+            )
             SESSIONS[user_id] = session
             generators.generate_today_image(user_id, session)
             await bot.send_message(user_id, 'You logged in successfully!')
@@ -417,7 +470,9 @@ async def selected(callback_query: CallbackQuery):
             elif training['checked_in']:
                 api.cancel_checkin(SESSIONS.get(user_id), training_id)
             else:
-                await callback_query.answer('Free seats for this workout are over, but you can turn on notifications to get information when at least one seat appears', show_alert=True)
+                await callback_query.answer(
+                    'Free seats for this workout are over, but you can turn on notifications to get '
+                    'information when at least one seat appears', show_alert=True)
                 return
         else:
             notified_users = database.get_notification_users(training_id)
@@ -435,7 +490,10 @@ async def selected(callback_query: CallbackQuery):
             await bot.edit_message_media(
                 chat_id=callback_query.message.chat.id,
                 message_id=callback_query.message.message_id,
-                media=InputMediaPhoto(file, caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)), parse_mode='Markdown'),
+                media=InputMediaPhoto(
+                    file,
+                    caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)),
+                    parse_mode='Markdown'),
                 reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id), user_id)
             )
 
@@ -478,12 +536,21 @@ async def raw_checkin(callback_query: CallbackQuery):
 
 
 @dp.message_handler(commands=['logout'])
-async def start(message: Message):
+async def logout(message: Message):
     user_id = message.from_user.id
     if SESSIONS.get(user_id):
         SESSIONS[user_id] = None
     database.remove_user(user_id)
     await message.reply("Your session information successfully deleted from the database")
+
+
+@dp.message_handler(commands=['repo'])
+async def repo(message: Message):
+    await message.reply(
+        "Thank you for being interested in project\! Here is "
+        "[open source code](https://github.com/cutefluffyfox/SportUIBot)\. "
+        "Good luck exploring\!",
+        parse_mode='MarkdownV2')
 
 
 @dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['kill'])
@@ -496,7 +563,7 @@ async def kill_application(message: Message):
 
 
 @dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['reload_semester'])
-async def kill_application(message: Message):
+async def reload_semester(message: Message):
     logging.critical('Reload semester_trainings.json file')
     if message.from_user.id == ADMIN_ID:  # useless if, but extra safety is nice
         generators.parse_and_save_whole_semester(SESSIONS.get(ADMIN_ID))
@@ -509,25 +576,29 @@ async def broadcast_message(message: Message):
 
 
 @dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['help'])
-async def kill_application(message: Message):
+async def print_help(message: Message):
     if message.from_user.id == ADMIN_ID:  # useless if, but extra safety is nice
         await message.reply(
             'You are admin, how you have forgotten your commands? Ok, let me explain:\n'
-            '/reload_semester - you will reload huge file that contains info about all trainings for current semester (used in auto-checkin)'
-            '/broadcast - you will open menu to send message to all users (statistic will be provided)'
-            '/kill - kill bot even if you are not connected to university wifi'
+            '/reload_semester - you will reload huge file that contains info about all trainings for current semester (used in auto-checkin)\n'
+            '/broadcast - you will open menu to send message to all users (statistic will be provided). '
+            'MardownV2 is implemented, so you can add *balled*, _italic_ and |spoiler| messages!\n'
+            '/kill - kill bot even if you are not connected to university wifi\n'
         )
 
 
 @dp.message_handler(state=BroadcastInfo.message)
 async def process_message(message: Message, state: FSMContext):
+    for symbol in '[]()~`>#+-={}.!':
+        message.text = message.text.replace(symbol, '\\' + symbol)
+    message.text = message.text.replace('|', '||')
     async with state.proxy() as data:
         data['message'] = message.text
     await BroadcastInfo.next()
     user_amount = len(database.get_users())
     await message.reply(
-        text=f"You sure you want to broadcast this message to *{user_amount}* users?",
-        parse_mode="Markdown",
+        text=f"You sure you want to broadcast this message to *{user_amount}* users?\n\n{message.text}",
+        parse_mode="MarkdownV2",
         reply_markup=generators.generate_confirmation_inline()
     )
 
@@ -542,7 +613,14 @@ async def selected_confirmation_result(callback_query: CallbackQuery, state: FSM
         async with state.proxy() as data:
             for user_id in users:
                 try:
-                    await bot.send_message(chat_id=user_id, text=data['message'])
+                    with open(f'images/happy.png', 'rb') as file:
+                        await bot.send_photo(
+                            chat_id=user_id,
+                            caption=data['message'],
+                            parse_mode='MarkdownV2',
+                            reply_markup=generators.generate_investigate_inline(),
+                            photo=file
+                        )
                 except Exception as ex:
                     fail += 1
         await bot.send_message(chat_id=callback_query.from_user.id, text=f'Amount of users: {len(users)}\nFailed attempts: {fail}')

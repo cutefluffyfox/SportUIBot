@@ -190,6 +190,12 @@ def generate_date_image(date: str, user_id: int, session: Session, rewrite: bool
     return draw_day(session=session, current_date=date, safe_file_name=str(user_id))
 
 
+def generate_investigate_inline(text: str = 'Investigate!'):
+    return generate_inline_markup(
+        {'text': text, 'callback_data': f'my/{get_today()}'}
+    )
+
+
 def generate_confirmation_inline():
     return generate_inline_markup(
         {'text': 'Yes, I am sure', 'callback_data': 'conf/sure'},
