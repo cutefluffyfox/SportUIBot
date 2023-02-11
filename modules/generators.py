@@ -135,8 +135,9 @@ def draw_my_week(session: Session, safe_file_name: str) -> bool:
     for sport in api.get_full_time_period(session, start_date, end_date):
         if not sport['extendedProps']['checked_in']:
             continue
-        start_datetime = datetime.fromisoformat(sport['start'])
-        end_datetime = datetime.fromisoformat(sport['end'])
+
+        start_datetime = datetime.fromisoformat(sport['start'].split('+')[0])
+        end_datetime = datetime.fromisoformat(sport['end'].split('+')[0])
         start_time = datetime(
             hour=start_datetime.hour,
             minute=start_datetime.minute,
@@ -152,6 +153,9 @@ def draw_my_week(session: Session, safe_file_name: str) -> bool:
             year=start.year
         )
         day = start_datetime.strftime('%Y/%m/%d')
+
+        if end_datetime < datetime.now():  # Do not show already past courses
+            continue
 
         if color_map.get(sport['title']) is None:
             if len(color_map) < len(COLORS):
@@ -172,9 +176,7 @@ def draw_my_week(session: Session, safe_file_name: str) -> bool:
     fig = px.timeline(df, x_start="Start", x_end="Finish", y="Day", text='Text', color='Title',
                       color_discrete_map=None if default_colors else color_map, width=2048, height=1080)
     fig.update_xaxes(showticklabels=False)
-    fig.update_layout(
-        font=dict(size=30)
-    )
+    fig.update_layout(font=dict(size=30))
 
     fig.write_image(f'images/{safe_file_name}.png')
     return True
@@ -193,6 +195,12 @@ def generate_date_image(date: str, user_id: int, session: Session, rewrite: bool
 def generate_investigate_inline(text: str = 'Investigate!'):
     return generate_inline_markup(
         {'text': text, 'callback_data': f'my/{get_today()}'}
+    )
+
+
+def generate_delete_inline(text: str = 'Got it!'):
+    return generate_inline_markup(
+        {'text': text, 'callback_data': 'del'}
     )
 
 
@@ -215,6 +223,7 @@ def generate_my_inline(date: str):
     return generate_inline_markup(
         {'text': 'Update info', 'callback_data': f'my/{date}'},
         {'text': 'Set autocheckin', 'callback_data': f'auto/{date}'},
+        {'text': 'Fast uncheckin', 'callback_data': f'unckin/{date}'},
         {'text': '« Back', 'callback_data': f'date/{date}'}
     )
 
@@ -262,6 +271,8 @@ def generate_date_group_time_buttons(date: str, group_id: int, session: Session,
         capacity = training_info['training']['group']['capacity']
         load = capacity - training_info['training']['load']
 
+        start_datetime = datetime.fromisoformat(sport['start'].split('+')[0])
+
         l_symbol = r_symbol = ""
         if sport['extendedProps']['checked_in']:
             r_symbol = "✅"
@@ -269,6 +280,8 @@ def generate_date_group_time_buttons(date: str, group_id: int, session: Session,
             r_symbol = "❌"
             if load == 0:
                 l_symbol = '🔔' if user_id in notified_users else '🔕'
+        if datetime.now() + timedelta(days=7) < start_datetime:
+            l_symbol = '🔔' if user_id in notified_users else '🔕'
         res.append([
             {
                 'text': f"{sport['start'].split('T')[1].split('+')[0][:-3]}-{sport['end'].split('T')[1].split('+')[0][:-3]} ({load}/{capacity}) {r_symbol}",
@@ -311,7 +324,6 @@ def generate_auto_checkin_list_markup(session: Session, date: str, user_id: int)
     start_date = get_today()
     end_date = get_shifted_day(8)
 
-
     sport_to_id = dict()
     for sport in api.get_full_time_period(session, start_date, end_date):
         if not sport['extendedProps']['checked_in']:
@@ -337,15 +349,84 @@ def generate_auto_checkin_list_markup(session: Session, date: str, user_id: int)
         ])
         for training in sport_to_id[sport_title]:
             auto_checked_in = database.check_auto_checkin(user_id, training['id'])
-            res.append([
-                {
-                    'text': f"{training['text']} " + ('🔁' if auto_checked_in else ''),
-                    'callback_data': f'aid/{date}/{training["id"]}'
-                }
-            ])
+            new_button = {
+                'text': f"{training['text']} " + ('🔁' if auto_checked_in else ''),
+                'callback_data': f'aid/{date}/{training["id"]}'
+            }
+            if new_button not in res:
+                res.append(new_button)
 
     res.append([{'text': '« Back', 'callback_data': f'my/{date}'}])
 
+    return generate_inline_markup(*res)
+
+
+def generate_fast_un_checkin_caption():
+    return f"Chose sport you want to unchekin:"
+
+
+def generate_fast_un_checkin_markup(session: Session, date: str = None, previous_markup: InlineKeyboardMarkup = None):
+    if date is None:
+        date = get_today()
+
+    prev_training_ids = set()
+    if previous_markup:
+        for button_line in previous_markup['inline_keyboard']:
+            for button in button_line:
+                if button['callback_data'].startswith('fckin/') and button['text'][-1] == '✅':
+                    prev_training_ids.add(button['callback_data'])
+
+    start_date = get_today()
+    end_date = get_shifted_day(8)
+
+    trainings = dict()
+    new_training_ids = set()
+    for sport in api.get_full_time_period(session, start_date, end_date):
+        if not sport['extendedProps']['checked_in']:
+            continue
+
+        start_datetime = datetime.fromisoformat(sport['start'].split('+')[0])
+        end_datetime = datetime.fromisoformat(sport['end'].split('+')[0])
+        if end_datetime < datetime.now():
+            continue
+
+        r_symbol = "✅" if sport['extendedProps']['checked_in'] else ''
+        title = sport['title']
+
+        new_training_ids.add(f'fckin/{sport["extendedProps"]["id"]}')
+
+        if trainings.get(title) is None:
+            trainings[title] = []
+        trainings[title].append({
+            'text': f'{calendar.day_name[start_datetime.weekday()]} {start_datetime.strftime("%H:%M")}-{end_datetime.strftime("%H:%M")} ({start_datetime.strftime("%d.%m")}) {r_symbol}',
+            'callback_data': f'fckin/{sport["extendedProps"]["id"]}'
+        })
+
+    if previous_markup:
+        for training_id in prev_training_ids ^ new_training_ids:
+            for i_line, line in enumerate(previous_markup['inline_keyboard']):
+                for i, button in enumerate(line):
+                    if button['callback_data'] != training_id:
+                        continue
+                    if button['text'][-1] != "✅":
+                        previous_markup['inline_keyboard'][i_line][i]['text'] = button['text'] + ' ✅'
+                    else:
+                        previous_markup['inline_keyboard'][i_line][i]['text'] = button['text'][:-2]
+        return previous_markup
+
+    res = []
+
+    for sport_title in trainings:
+        res.append([
+            {
+                'text': f'===== {sport_title} =====',
+                'callback_data': 'why'
+            }
+        ])
+        for training_button in trainings[sport_title]:
+            res.append(training_button)
+
+    res.append([{'text': '« Back', 'callback_data': f'my/{date}'}])
     return generate_inline_markup(*res)
 
 

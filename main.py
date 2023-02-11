@@ -18,7 +18,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from modules import api, database, generators
 
-
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s %(levelname)-8s %(message)s',
@@ -38,7 +37,6 @@ if ADMIN_ID is None:
     logging.critical('No ADMIN_ID variable found in project environment')
 else:
     ADMIN_ID = int(ADMIN_ID)
-
 
 # Initialize bot and dispatcher
 bot = Bot(token=BOT_TOKEN)
@@ -72,6 +70,7 @@ async def handle_notifications():
     if not update_session(ADMIN_ID):
         logging.warning('Admin session died')
         SESSIONS[ADMIN_ID] = api.login_user(getenv('ADMIN_EMAIL'), getenv('ADMIN_PSW'))
+
     notifications = database.get_notifications()
     for training_id in notifications:
         training_info = api.get_training_info(session=SESSIONS.get(ADMIN_ID), training_id=training_id)
@@ -86,9 +85,12 @@ async def handle_notifications():
             training_time = end_time.strftime("%H:%M")
             training_day = end_time.strftime('%d/%m/%Y')
             weekday = calendar.day_name[end_time.weekday()]
-            text = f'Sorry, but no free spaces appeared for a {training_name} at {training_time} on {weekday} ({training_day}).\nNot to got into the same situation again see autocheckin feature in `My sports`'
+            text = f'Sorry, but no free spaces appeared for a {training_name} at {training_time} on {weekday} ' \
+                   f'({training_day}).\n' \
+                   f'Not to got into the same situation again see autocheckin feature in `My sports`'
             await send_users(notification_users, text)
             database.remove_notification(training_id)
+
         elif load > 0:
             notification_users = database.get_notification_users(training_id)
             logging.info(f'Notification succeed for {training_id} and users {len(notification_users)}')
@@ -114,13 +116,12 @@ async def handle_check_in():
         if not update_session(user_id):
             if not LOGIN_REQUEST.get(user_id, False):
                 LOGIN_REQUEST[user_id] = True
-                with open(f'images/dead_session.png', 'rb') as file:
-                    await bot.send_photo(
-                        chat_id=user_id,
-                        caption='Your session died, please login one more time to keep your auto-checkin running',
-                        reply_markup=generators.generate_date_inline(generators.get_today()),
-                        photo=file
-                    )
+
+                await bot.send_message(
+                    chat_id=user_id,
+                    text='Your session died, please login one more time to keep your auto-checkin running',
+                    reply_markup=generators.generate_delete_inline('Login!'),
+                )
             continue
 
         for training_key, sport_list in auto_checkins[user_id].items():
@@ -128,7 +129,6 @@ async def handle_check_in():
                 training_info = api.get_training_info(SESSIONS.get(user_id), training_id)
 
                 if training_info.get('detail') is not None:
-
                     group_id, weekday, time = training_key.split('|')
                     group_info = api.get_group_info(SESSIONS.get(ADMIN_ID), group_id)
 
@@ -150,6 +150,7 @@ async def handle_check_in():
                     database.remove_auto_checkin(user_id, training_key)
                     generators.generate_auto_checkin_list_caption()
                     break
+
                 if datetime.datetime.fromisoformat(training_info['training']['end'].split('+')[0]) < datetime.datetime.now():
                     database.remove_given_auto_checkin(user_id, training_key, training_id)
                     continue
@@ -175,14 +176,12 @@ async def handle_check_in():
                         f'{calendar.day_name[int(weekday)]} at {time} ({training_start.strftime("%d/%m/%Y")}).\n' \
                         f'Thanks for using @{bot_info["username"]}!'
 
-                    with open(f'images/jumping.png', 'rb') as file:
-                        await bot.send_photo(
-                            chat_id=user_id,
-                            caption=user_message,
-                            parse_mode='Markdown',
-                            reply_markup=generators.generate_investigate_inline(text='Check my schedule!'),
-                            photo=file
-                        )
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=user_message,
+                        parse_mode='Markdown',
+                        reply_markup=generators.generate_delete_inline(),
+                    )
                 break
 
 
@@ -213,7 +212,7 @@ async def server_is_down(message: Message):
 
 
 @dp.callback_query_handler(lambda c: not update_session(c.from_user.id))
-async def session_problem(callback_query: CallbackQuery):
+async def session_problem_button(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     if SESSIONS.get(user_id) and callback_query.message.photo is None:
         await bot.send_message(
@@ -234,7 +233,8 @@ async def session_problem(callback_query: CallbackQuery):
             text="Hello! I am sport in IU manager bot.\n"
                  "My goal is to help managing UI sport site. "
                  "I can help you get notifications about sport hours (for you not to forget), "
-                 "check in you, collect statistics! "
+                 "set up autocheckin so you would never miss your trainings, "
+                 "collect statistics and much-much more!\n"
                  "Let's get started. First I need your innopolis.university email:"
         )
 
@@ -242,13 +242,39 @@ async def session_problem(callback_query: CallbackQuery):
     await Registration.email.set()
 
 
+@dp.message_handler(lambda m: not update_session(m.from_user.id))
+async def session_problem_message(message: Message):
+    user_id = message.from_user.id
+    LOGIN_REQUEST[user_id] = False
+    if SESSIONS.get(user_id):
+        await bot.send_message(
+            chat_id=user_id,
+            text="Your session expired, please login to continue. Enter your email:"
+        )
+    else:
+        await bot.send_message(
+            chat_id=user_id,
+            text="Hello! I am sport in IU manager bot.\n"
+                 "My goal is to help managing UI sport site. "
+                 "I can help you get notifications about sport hours (for you not to forget), "
+                 "set up autocheckin so you would never miss your trainings, "
+                 "collect statistics and much-much more!\n"
+                 "Let's get started. First I need your innopolis.university email:"
+        )
+
+    await Registration.email.set()
+
+
 @dp.message_handler(commands=['start', 'login'])
 async def start(message: Message):
-    await message.answer(
-        "Hello! I am sport in IU manager bot.\n"
-        "My goal is to help managing UI sport site. "
-        "I can help you get notifications about sport hours (for you not to forget), check in you, collect statistics! "
-        "Let's get started. First I need your innopolis.university email:"
+    await bot.send_message(
+        chat_id=message.from_user.id,
+        text="Hello! I am sport in IU manager bot.\n"
+             "My goal is to help managing UI sport site. "
+             "I can help you get notifications about sport hours (for you not to forget), "
+             "set up autocheckin so you would never miss your trainings, "
+             "collect statistics and much-much more!\n"
+             "Let's get started. First I need your innopolis.university email:"
     )
     await Registration.email.set()
 
@@ -301,35 +327,21 @@ async def process_password(message: Message, state: FSMContext):
             )
         except RetryError as ex:
             await Registration.first()
-            await bot.send_message(message.from_user.id, 'Authentication server is down, please try again later.\nSend me your email one more time:')
+            await bot.send_message(
+                message.from_user.id,
+                'Authentication server is down, please try again later.\nSend me your email one more time:'
+            )
         except ConnectionError as ex:
             await Registration.first()
-            await bot.send_message(message.from_user.id, 'Sorry, sport server is down. Please try again later.\nSend me your email one more time:')
+            await bot.send_message(
+                message.from_user.id,
+                'Sorry, sport server is down. Please try again later.\nSend me your email one more time:')
         except Exception as ex:
             await Registration.first()
-            await bot.send_message(message.from_user.id, "Something went wrong with your authentication, please contact @cutefluffyfox or try again (probably won't help):\nSend your innopolis email:")
-
-
-@dp.message_handler(lambda m: not update_session(m.from_user.id))
-async def session_problem(message: Message):
-    user_id = message.from_user.id
-    LOGIN_REQUEST[user_id] = False
-    if SESSIONS.get(user_id):
-        await bot.send_message(
-            chat_id=user_id,
-            text="Your session expired, please login to continue. Enter your email:"
-        )
-    else:
-        await bot.send_message(
-            chat_id=user_id,
-            text="Hello! I am sport in IU manager bot.\n"
-                 "My goal is to help managing UI sport site. "
-                 "I can help you get notifications about sport hours (for you not to forget), "
-                 "check in you, collect statistics! "
-                 "Let's get started. First I need your innopolis.university email:"
-        )
-
-    await Registration.email.set()
+            await bot.send_message(
+                message.from_user.id,
+                "Something went wrong with your authentication, please contact @cutefluffyfox or "
+                "try again (probably won't help):\nSend your innopolis email:")
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('my/'))
@@ -342,7 +354,10 @@ async def my_image(callback_query: CallbackQuery):
             await bot.edit_message_media(
                 chat_id=callback_query.message.chat.id,
                 message_id=callback_query.message.message_id,
-                media=InputMediaPhoto(file, caption=generators.generate_my_caption(SESSIONS.get(user_id)), parse_mode='Markdown'),
+                media=InputMediaPhoto(
+                    file,
+                    caption=generators.generate_my_caption(SESSIONS.get(user_id)),
+                    parse_mode='Markdown'),
                 reply_markup=generators.generate_my_inline(date)
             )
     except MessageNotModified as ex:
@@ -358,7 +373,8 @@ async def change_day(callback_query: CallbackQuery):
             message_id=callback_query.message.message_id,
             media=InputMediaPhoto(file, caption='Please select day of the week that you want to attend:'),
             reply_markup=generators.generate_inline_markup(
-                *[{'text': f'{weekday} ({date})', 'callback_data': f'date/{date}'} for (date, weekday) in generators.get_week()]
+                *[{'text': f'{weekday} ({date})', 'callback_data': f'date/{date}'} for (date, weekday) in
+                  generators.get_week()]
             )
         )
     await callback_query.answer('Select day')
@@ -444,6 +460,13 @@ async def set_auto_checkin(callback_query: CallbackQuery):
     if auto_checked_in:
         database.remove_auto_checkin(user_id, training_key)
     else:
+        group_id = training_key.split('/')[0]
+        if group_id in ['436']:  # Some Teachers have request to disable this feature. Please respect them.
+            await callback_query.answer(
+                text='Teacher of this course requested to disable this feature. '
+                     'Please respect them and use notification system',
+                show_alert=True)
+            return
         training_ids = generators.get_training_ids_to_auto_checkin(SESSIONS.get(user_id), training_key.replace('|', '/'))
         database.add_auto_checkin(user_id, training_key, training_ids)
 
@@ -453,7 +476,21 @@ async def set_auto_checkin(callback_query: CallbackQuery):
         reply_markup=generators.generate_auto_checkin_list_markup(SESSIONS.get(user_id), date, user_id)
     )
 
-    await callback_query.answer('Auto-checkin removed successfully' if auto_checked_in else 'Auto-checkin set successfully')
+    await callback_query.answer(
+        'Auto-checkin removed successfully' if auto_checked_in else 'Auto-checkin set successfully')
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith('unckin/'))
+async def selected(callback_query: CallbackQuery):
+    date = callback_query.data.split('/')[1]
+    user_id = callback_query.from_user.id
+
+    await bot.edit_message_caption(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        caption=generators.generate_fast_un_checkin_caption(),
+        reply_markup=generators.generate_fast_un_checkin_markup(SESSIONS.get(user_id), date)
+    )
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('tid/') or c.data.startswith('ntid/'))
@@ -464,11 +501,16 @@ async def selected(callback_query: CallbackQuery):
 
     try:
         training = api.get_training_info(SESSIONS.get(user_id), training_id)
+        start_datetime = datetime.datetime.fromisoformat(training['training']['start'].split('+')[0])
         if callback_type == 'tid':
             if training['can_check_in'] and not training['checked_in']:
                 api.checkin(SESSIONS.get(user_id), training_id)
             elif training['checked_in']:
                 api.cancel_checkin(SESSIONS.get(user_id), training_id)
+            elif datetime.datetime.now() + datetime.timedelta(days=7) < start_datetime:
+                await callback_query.answer(
+                    'This training is not available for checkin now', show_alert=True)
+                return
             else:
                 await callback_query.answer(
                     'Free seats for this workout are over, but you can turn on notifications to get '
@@ -502,29 +544,64 @@ async def selected(callback_query: CallbackQuery):
         await callback_query.answer('Some error occurred, please try again later', show_alert=True)
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('rawckin/') or c.data.startswith('rawnid/'))
+@dp.callback_query_handler(lambda c: c.data.startswith('rawckin/') or c.data.startswith('rawnid/') or c.data.startswith('fckin/'))
 async def raw_checkin(callback_query: CallbackQuery):
     training_id = int(callback_query.data.split('/')[1])
     user_id = callback_query.from_user.id
     callback_type = callback_query.data.split('/')[0]
 
     training_info = api.get_training_info(SESSIONS.get(user_id), training_id)
-    if callback_type == 'rawckin':
+    if callback_type == 'rawckin' or callback_type == 'fckin':
         if training_info['can_check_in'] and not training_info['checked_in']:
             api.checkin(SESSIONS.get(user_id), training_id)
-            await bot.delete_message(
-                chat_id=user_id,
-                message_id=callback_query.message.message_id
-            )
+
+            if callback_type == 'rawckin':
+                await bot.delete_message(
+                    chat_id=user_id,
+                    message_id=callback_query.message.message_id
+                )
+            else:
+                contains = generators.draw_my_week(SESSIONS.get(user_id), user_id)
+                with open(f'images/{user_id if contains else "sleep"}.png', 'rb') as file:
+                    await bot.edit_message_media(
+                        chat_id=callback_query.message.chat.id,
+                        message_id=callback_query.message.message_id,
+                        media=InputMediaPhoto(
+                            file,
+                            caption=generators.generate_fast_un_checkin_caption(),
+                            parse_mode='Markdown'),
+                        reply_markup=generators.generate_fast_un_checkin_markup(SESSIONS.get(user_id),
+                                                                                previous_markup=callback_query.message.reply_markup)
+                    )
+
+        elif training_info['checked_in']:
+            api.cancel_checkin(SESSIONS.get(user_id), training_id)
+
+            if callback_query.message.photo is not None:
+                contains = generators.draw_my_week(SESSIONS.get(user_id), user_id)
+                with open(f'images/{user_id if contains else "sleep"}.png', 'rb') as file:
+                    await bot.edit_message_media(
+                        chat_id=callback_query.message.chat.id,
+                        message_id=callback_query.message.message_id,
+                        media=InputMediaPhoto(
+                            file,
+                            caption=generators.generate_fast_un_checkin_caption(),
+                            parse_mode='Markdown'),
+                        reply_markup=generators.generate_fast_un_checkin_markup(SESSIONS.get(user_id),
+                                                                                previous_markup=callback_query.message.reply_markup)
+                    )
+
         else:
             await callback_query.answer(
-                'Free seats for this workout are over, but you can turn on notifications to get information when at least one seat appears',
+                'Free seats for this workout are over, but you can turn on '
+                'notifications to get information when at least one seat appears',
                 show_alert=True
             )
             await bot.edit_message_reply_markup(
                 chat_id=user_id,
                 message_id=callback_query.message.message_id,
-                reply_markup=generators.generate_inline_markup({'text': 'Notify me 🔔', 'callback_data': f'rawnid/{training_id}'})
+                reply_markup=generators.generate_inline_markup(
+                    {'text': 'Notify me 🔔', 'callback_data': f'rawnid/{training_id}'})
             )
     else:
         database.add_user_notification(training_id, user_id)
@@ -533,6 +610,12 @@ async def raw_checkin(callback_query: CallbackQuery):
             message_id=callback_query.message.message_id
         )
         await callback_query.answer('Success')
+
+
+@dp.callback_query_handler(lambda c: c.data == 'del')
+async def delete_message(callback_query: CallbackQuery):
+    await callback_query.message.delete()
+    await callback_query.answer('Nice!')
 
 
 @dp.message_handler(commands=['logout'])
@@ -605,7 +688,8 @@ async def process_message(message: Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data.startswith('conf/'), state=BroadcastInfo.confirmation)
 async def selected_confirmation_result(callback_query: CallbackQuery, state: FSMContext):
-    await bot.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    await bot.edit_message_reply_markup(chat_id=callback_query.message.chat.id,
+                                        message_id=callback_query.message.message_id)
     choice = callback_query.data.split('/')[1]
     if choice == 'sure':
         users = database.get_users()
@@ -623,7 +707,8 @@ async def selected_confirmation_result(callback_query: CallbackQuery, state: FSM
                         )
                 except Exception as ex:
                     fail += 1
-        await bot.send_message(chat_id=callback_query.from_user.id, text=f'Amount of users: {len(users)}\nFailed attempts: {fail}')
+        await bot.send_message(chat_id=callback_query.from_user.id,
+                               text=f'Amount of users: {len(users)}\nFailed attempts: {fail}')
         logging.info(f'Broadcast message for {len(users)} users with {fail} users failed')
     await state.finish()
     await callback_query.answer('Complete')
