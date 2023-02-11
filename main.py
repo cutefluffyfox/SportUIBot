@@ -124,6 +124,7 @@ async def handle_check_in():
                 )
             continue
 
+        # print(user_id)
         for training_key, sport_list in auto_checkins[user_id].items():
             for training_id in sport_list:
                 training_info = api.get_training_info(SESSIONS.get(user_id), training_id)
@@ -155,16 +156,18 @@ async def handle_check_in():
                     database.remove_given_auto_checkin(user_id, training_key, training_id)
                     continue
 
-                training_start = datetime.datetime.fromisoformat(training_info['training']['start'].split('+')[0])
-                if not training_info['can_check_in'] or datetime.datetime.now() + datetime.timedelta(days=7) <= training_start:
-                    break
-
                 if training_info['checked_in']:
                     database.remove_given_auto_checkin(user_id, training_key, training_id)
                     continue
 
+                training_start = datetime.datetime.fromisoformat(training_info['training']['start'].split('+')[0])
+
+                if not training_info['can_check_in'] or datetime.datetime.now() + datetime.timedelta(days=7) <= training_start:
+                    break
+
                 load = training_info['training']['group']['capacity'] - training_info['training']['load']
                 if load > 0 and training_info['can_check_in'] and not training_info['checked_in']:
+                    print(user_id, training_key, training_id)
                     api.checkin(SESSIONS.get(user_id), training_id)
                     database.remove_given_auto_checkin(user_id, training_key, training_id)
 
