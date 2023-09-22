@@ -84,7 +84,7 @@ def __adjust_text(text: str, char: str, size: int) -> str:
     return char * just_size + ' ' + text + ' ' + char * just_size
 
 
-def draw_day(session: Session, current_date: str, safe_file_name: str) -> bool:
+def draw_day(session: Session, current_date: str, safe_file_name: str, ignore_checked_in: bool = False) -> bool:
     color_map = dict(not_available="#DDDDDD")
     graph_data = []
     default_colors = False
@@ -94,10 +94,19 @@ def draw_day(session: Session, current_date: str, safe_file_name: str) -> bool:
                 color_map[sport['title']] = COLORS[len(color_map)]
             else:
                 default_colors = True
-        cant_check_in = not sport['extendedProps']['checked_in'] and not sport['extendedProps']['can_check_in']
+
+        cant_check_in = (not sport['extendedProps']['checked_in'] or ignore_checked_in) and not sport['extendedProps']['can_check_in']
+        if cant_check_in and ignore_checked_in:
+            training_info = api.get_training_info(session, sport['extendedProps']['id'])
+
+            capacity = training_info['training']['group']['capacity']
+            load = capacity - training_info['training']['load']
+
+            if load > 0:
+                cant_check_in = False
 
         symbol = ""
-        if sport['extendedProps']['checked_in']:
+        if sport['extendedProps']['checked_in'] and not ignore_checked_in:
             symbol = " ✔ "
 
         start_datetime = datetime.fromisoformat(sport['start'])
@@ -182,14 +191,21 @@ def draw_my_week(session: Session, safe_file_name: str) -> bool:
     return True
 
 
-def generate_today_image(user_id: int, session: Session) -> bool:
-    return generate_date_image(get_today(), user_id, session)
+def generate_today_image(user_id: int, session: Session, ignore_checked_in: bool = False) -> bool:
+    return generate_date_image(get_today(), user_id, session, ignore_checked_in=ignore_checked_in)
 
 
-def generate_date_image(date: str, user_id: int, session: Session, rewrite: bool = False) -> bool:
+def generate_date_image(date: str, user_id: int, session: Session, rewrite: bool = False, ignore_checked_in: bool = False) -> bool:
     if isfile(f'images/{user_id}.png') and not rewrite:
         return True
-    return draw_day(session=session, current_date=date, safe_file_name=str(user_id))
+    return draw_day(session=session, current_date=date, safe_file_name=str(user_id), ignore_checked_in=ignore_checked_in)
+
+
+def generate_mode_selection_inline():
+    return generate_inline_markup(
+        {'text': 'Offline', 'callback_data': 'start/offline'},
+        {'text': 'Full-experience', 'callback_data': 'start/full'}
+    )
 
 
 def generate_investigate_inline(text: str = 'Investigate!'):
@@ -224,7 +240,15 @@ def generate_my_inline(date: str):
         {'text': 'Update info', 'callback_data': f'my/{date}'},
         {'text': 'Set autocheckin', 'callback_data': f'auto/{date}'},
         {'text': 'Fast uncheckin', 'callback_data': f'unckin/{date}'},
+        {'text': 'Logout', 'callback_data': f'logout/{date}'},
         {'text': '« Back', 'callback_data': f'date/{date}'}
+    )
+
+
+def generate_logout_inline(date: str):
+    return generate_inline_markup(
+        {'text': 'Yes, I want to logout', 'callback_data': 'logoutnow'},
+        {'text': '<< Back', 'callback_data': f'my/{date}'}
     )
 
 
@@ -259,7 +283,7 @@ def generate_date_courses_buttons(date: str, session: Session):
     return generate_inline_markup(*res)
 
 
-def generate_date_group_time_buttons(date: str, group_id: int, session: Session, user_id: int):
+def generate_date_group_time_buttons(date: str, group_id: int, session: Session, user_id: int, ignore_checked_in: bool = False):
     res = []
     sports = api.get_full_day(session, date)
     trainings = [sport for sport in sports if sport['extendedProps']['group_id'] == group_id]
@@ -274,10 +298,10 @@ def generate_date_group_time_buttons(date: str, group_id: int, session: Session,
         start_datetime = datetime.fromisoformat(sport['start'].split('+')[0])
 
         l_symbol = r_symbol = ""
-        if sport['extendedProps']['checked_in']:
+        if sport['extendedProps']['checked_in'] and not ignore_checked_in:
             r_symbol = "✅"
         elif not sport['extendedProps']['can_check_in']:
-            r_symbol = "❌"
+            r_symbol = "❌" if not ignore_checked_in else ""
             if load == 0:
                 l_symbol = '🔔' if user_id in notified_users else '🔕'
         if datetime.now() + timedelta(days=7) < start_datetime:

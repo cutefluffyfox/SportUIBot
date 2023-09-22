@@ -47,7 +47,15 @@ LOGIN_REQUEST = dict()
 
 
 # States
-class Registration(StatesGroup):
+class ModeSelection(StatesGroup):
+    idling = State()
+
+
+class RegistrationOffline(StatesGroup):
+    user_id = State()
+
+
+class RegistrationFull(StatesGroup):
     email = State()
     password = State()
 
@@ -57,11 +65,11 @@ class BroadcastInfo(StatesGroup):
     confirmation = State()
 
 
-async def send_users(users: list, text: str, reply_markup=None):
+async def send_users(users: list, text: str, reply_markup: dict = None, segregate_offline: dict = None):
     logging.info('Auto-broadcast mode activated')
     for user_id in users:
         try:
-            await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+            await bot.send_message(chat_id=user_id, text=text, reply_markup=generators.generate_inline_markup(segregate_offline if segregate_offline else reply_markup))
         except Exception:
             pass
 
@@ -99,7 +107,7 @@ async def handle_notifications():
             training_day = end_time.strftime('%d/%m/%Y')
             weekday = calendar.day_name[end_time.weekday()]
             text = f"There is one available place for a {training_name} at {training_time} on {weekday} ({training_day}) ! Check-in ASAP!\nThis message has been sent to {len(notification_users) - 1} more people"
-            await send_users(notification_users, text, generators.generate_inline_markup({'text': '‼️Check-in ‼', 'callback_data': f'rawckin/{training_id}'}))
+            await send_users(notification_users, text, {'text': '‼️Check-in ‼', 'callback_data': f'rawckin/{training_id}'}, segregate_offline={'text': 'Got it', 'callback_data': 'del'})
             database.remove_notification(training_id)
 
 
@@ -124,7 +132,6 @@ async def handle_check_in():
                 )
             continue
 
-        # print(user_id)
         for training_key, sport_list in auto_checkins[user_id].items():
             for training_id in sport_list:
                 training_info = api.get_training_info(SESSIONS.get(user_id), training_id)
@@ -167,7 +174,6 @@ async def handle_check_in():
 
                 load = training_info['training']['group']['capacity'] - training_info['training']['load']
                 if load > 0 and training_info['can_check_in'] and not training_info['checked_in']:
-                    print(user_id, training_key, training_id)
                     api.checkin(SESSIONS.get(user_id), training_id)
                     database.remove_given_auto_checkin(user_id, training_key, training_id)
 
@@ -189,8 +195,8 @@ async def handle_check_in():
 
 
 scheduler = AsyncIOScheduler()
-scheduler.add_job(func=handle_notifications, trigger="interval", seconds=10)
-scheduler.add_job(func=handle_check_in, trigger="interval", seconds=10)
+scheduler.add_job(func=handle_notifications, trigger="interval", seconds=30)
+scheduler.add_job(func=handle_check_in, trigger="interval", seconds=30)
 scheduler.start()
 logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
 
@@ -201,7 +207,17 @@ atexit.register(lambda: scheduler.shutdown())
 def update_session(user_id: int) -> bool:
     if SESSIONS.get(user_id) is None:
         SESSIONS[user_id] = database.create_session(user_id)
-    return api.session_is_valid(SESSIONS[user_id]) if SESSIONS.get(user_id) is not None else False
+
+    if SESSIONS.get(user_id) is None:
+        return False
+    if SESSIONS.get(user_id).cookies.get('sessionid') is None:  # offline users are valid users with valid session
+        return True
+    return api.session_is_valid(SESSIONS[user_id])
+
+
+def is_offline(user_id: int) -> bool:
+    update_session(user_id)
+    return (SESSIONS.get(user_id) is not None) and (SESSIONS.get(user_id).cookies.get('sessionid') is None)
 
 
 @dp.message_handler(lambda msg: api.is_dead())
@@ -214,35 +230,90 @@ async def server_is_down(message: Message):
     )
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith('start/'))
+async def start_registration(callback_query: CallbackQuery):
+    mode = callback_query.data.split('/')[1]
+    await callback_query.answer('Nice choice!')
+
+    if mode == 'offline':
+        if not callback_query.message.photo:
+            await bot.edit_message_text(
+                text='To access offline mode I only need one thing - your id on the sport website\n\n'
+                     'You can find it pretty easily:\n'
+                     '1. Go to [your profile](https://sport.innopolis.university/profile/) \n'
+                     '2. Open \`Console\` (F12 of just right click)\n'
+                     '3. Type \`student\_id\` and press Enter\n'
+                     '4. Copy 3-4 digit number (e.x. 1082)\n\n'
+                     'Please type your student\_id:',
+                message_id=callback_query.message.message_id,
+                chat_id=callback_query.message.chat.id,
+                parse_mode='Markdown'
+            )
+        else:
+            await bot.edit_message_caption(
+                caption='To access offline mode I only need one thing - your id on the sport website\n\n'
+                         'You can find it pretty easily:\n'
+                         '1. Go to [your profile](https://sport.innopolis.university/profile/) \n'
+                         '2. Open \`Console\` (F12 of just right click)\n'
+                         '3. Type \`student\_id\` and press Enter\n'
+                         '4. Copy 3-4 digit number (e.x. 1082)\n\n'
+                         'Please type your student\_id:',
+                message_id=callback_query.message.message_id,
+                chat_id=callback_query.message.chat.id,
+                parse_mode='Markdown'
+            )
+        await RegistrationOffline.user_id.set()
+    else:  # mode == 'full'
+        if not callback_query.message.photo:
+            await bot.edit_message_text(
+                message_id=callback_query.message.message_id,
+                chat_id=callback_query.message.chat.id,
+                text='To access full-experience mode you need to register. First I need your innopolis.university email:'
+            )
+        else:
+            await bot.edit_message_caption(
+                message_id=callback_query.message.message_id,
+                chat_id=callback_query.message.chat.id,
+                caption='To access full-experience mode you need to register. First I need your innopolis.university email:'
+            )
+        await RegistrationFull.email.set()
+
+
 @dp.callback_query_handler(lambda c: not update_session(c.from_user.id))
 async def session_problem_button(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
-    if SESSIONS.get(user_id) and callback_query.message.photo is None:
+    if SESSIONS.get(user_id) and not callback_query.message.photo:
         await bot.send_message(
             chat_id=user_id,
-            text="Your session expired, please login to continue. Enter your email:"
+            text="Seems like your session expired, please login to continue or switch to offline mode. How would you like to continue?",
+            reply_markup=generators.generate_mode_selection_inline()
         )
-    elif SESSIONS.get(user_id):
+    elif SESSIONS.get(user_id) and callback_query.message.photo:
         with open(f'images/dead_session.png', 'rb') as file:
             await bot.edit_message_media(
                 chat_id=callback_query.message.chat.id,
                 message_id=callback_query.message.message_id,
-                media=InputMediaPhoto(file,
-                                      caption="Your session expired, please login to continue. Enter your email:")
+                media=InputMediaPhoto(file, caption="Seems like your session expired, please login to continue or switch to offline mode. How would you like to continue?"),
+                reply_markup=generators.generate_mode_selection_inline()
             )
     else:
         await bot.send_message(
             chat_id=user_id,
-            text="Hello! I am sport in IU manager bot.\n"
-                 "My goal is to help managing UI sport site. "
+            text="Hello! I am sport in IU manager bot.\n\n"
+                 "My goal is to _help managing IU_ sport site. "
                  "I can help you get notifications about sport hours (for you not to forget), "
                  "set up autocheckin so you would never miss your trainings, "
                  "collect statistics and much-much more!\n"
-                 "Let's get started. First I need your innopolis.university email:"
+                 "Let's get started.\n"
+                 "\n"
+                 "I support two modes:\n"
+                 "> _Offline_ \[no registration required] - you can check schedule, add notifications and see your statistics\n"
+                 "> _Full-experience_ \[registration required] - everything as offline + check-in + autocheck-in\n\n"
+                 "How would you like to use me?",
+            reply_markup=generators.generate_mode_selection_inline()
         )
 
     await callback_query.answer('Updated')
-    await Registration.email.set()
 
 
 @dp.message_handler(lambda m: not update_session(m.from_user.id))
@@ -252,41 +323,88 @@ async def session_problem_message(message: Message):
     if SESSIONS.get(user_id):
         await bot.send_message(
             chat_id=user_id,
-            text="Your session expired, please login to continue. Enter your email:"
+            text="Seems like your session has expired, please login to continue or switch to offline mode. How would you like to login?",
+            reply_markup=generators.generate_mode_selection_inline()
         )
     else:
         await bot.send_message(
-            chat_id=user_id,
-            text="Hello! I am sport in IU manager bot.\n"
-                 "My goal is to help managing UI sport site. "
+            chat_id=message.from_user.id,
+            text="Hello! I am sport in IU manager bot.\n\n"
+                 "My goal is to _help managing IU_ sport site. "
                  "I can help you get notifications about sport hours (for you not to forget), "
                  "set up autocheckin so you would never miss your trainings, "
                  "collect statistics and much-much more!\n"
-                 "Let's get started. First I need your innopolis.university email:"
+                 "Let's get started.\n"
+                 "\n"
+                 "I support two modes:\n"
+                 "> _Offline_ \[no registration required] - you can check schedule, add notifications and see your statistics\n"
+                 "> _Full-experience_ \[registration required] - everything as offline + check-in + autocheck-in\n\n"
+                 "How would you like to use me?",
+            reply_markup=generators.generate_mode_selection_inline(),
+            parse_mode='Markdown'
         )
-
-    await Registration.email.set()
 
 
 @dp.message_handler(commands=['start', 'login'])
 async def start(message: Message):
     await bot.send_message(
         chat_id=message.from_user.id,
-        text="Hello! I am sport in IU manager bot.\n"
-             "My goal is to help managing UI sport site. "
+        text="Hello! I am sport in IU manager bot.\n\n"
+             "My goal is to _help managing IU_ sport site. "
              "I can help you get notifications about sport hours (for you not to forget), "
              "set up autocheckin so you would never miss your trainings, "
              "collect statistics and much-much more!\n"
-             "Let's get started. First I need your innopolis.university email:"
-    )
-    await Registration.email.set()
+             "Let's get started.\n"
+             "\n"
+             "I support two modes:\n"
+             "> _Offline_ \[no registration required] - you can check schedule, add notifications and see your statistics\n"
+             "> _Full-experience_ \[registration required] - everything as offline + check-in + autocheck-in\n\n"
+             "How would you like to use me?",
+        reply_markup=generators.generate_mode_selection_inline(),
+        parse_mode='Markdown'
+        )
 
 
-@dp.message_handler(state=Registration.email)
+@dp.message_handler(state=RegistrationOffline.user_id)
+async def process_sport_user_id(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    student_id = message.text.replace('\'"', '')
+    print(user_id, student_id)
+    print(api.student_id_is_valid(SESSIONS.get(ADMIN_ID), student_id))
+
+    if not api.student_id_is_valid(SESSIONS.get(ADMIN_ID), student_id):
+        await bot.send_message(
+            chat_id=user_id,
+            text="Seems like this student_id is invalid, please check and try again. How would you like to login?",
+            reply_markup=generators.generate_mode_selection_inline()
+        )
+        await state.finish()
+        return
+
+    database.create_user(user_id=user_id, student_id=student_id)
+    update_session(user_id)
+
+    generators.generate_today_image(user_id, SESSIONS.get(ADMIN_ID), ignore_checked_in=True)
+
+    await bot.send_message(user_id, 'You logged in successfully!')
+
+    with open(f'images/{user_id}.png', 'rb') as file:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            caption=generators.generate_date_caption(generators.get_today()),
+            parse_mode='Markdown',
+            reply_markup=generators.generate_date_inline(generators.get_today()),
+            photo=file
+        )
+
+    await state.finish()
+
+
+@dp.message_handler(state=RegistrationFull.email)
 async def process_email(message: Message, state: FSMContext):
     async with state.proxy() as data:
         data['email'] = message.text
-    await Registration.next()
+    await RegistrationFull.next()
     await message.reply(
         text="And send password to your account "
              "(message will be automatically deleted, "
@@ -296,7 +414,7 @@ async def process_email(message: Message, state: FSMContext):
     )
 
 
-@dp.message_handler(state=Registration.password)
+@dp.message_handler(state=RegistrationFull.password)
 async def process_password(message: Message, state: FSMContext):
     user_id = message.from_user.id
     await bot.delete_message(message.chat.id, message.message_id)
@@ -322,25 +440,25 @@ async def process_password(message: Message, state: FSMContext):
                 )
             await state.finish()
         except ContentDecodingError as ex:
-            await Registration.first()
             await bot.send_message(
                 message.from_user.id,
-                'It seems like your data is invalid. Please check it once again.\n'
-                'Send me your email one more time:'
+                'It seems like your data is invalid. Please check it and try again. How would you like to login?',
+                reply_markup=generators.generate_mode_selection_inline()
             )
+            await state.finish()
         except RetryError as ex:
-            await Registration.first()
+            await RegistrationFull.first()
             await bot.send_message(
                 message.from_user.id,
                 'Authentication server is down, please try again later.\nSend me your email one more time:'
             )
         except ConnectionError as ex:
-            await Registration.first()
+            await RegistrationFull.first()
             await bot.send_message(
                 message.from_user.id,
                 'Sorry, sport server is down. Please try again later.\nSend me your email one more time:')
         except Exception as ex:
-            await Registration.first()
+            await RegistrationFull.first()
             await bot.send_message(
                 message.from_user.id,
                 "Something went wrong with your authentication, please contact @cutefluffyfox or "
@@ -351,9 +469,14 @@ async def process_password(message: Message, state: FSMContext):
 async def my_image(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
     user_id = callback_query.from_user.id
-    contains = generators.draw_my_week(SESSIONS.get(user_id), user_id)
+
+    render = 'please_register'
+    if not is_offline(user_id):
+        render = generators.draw_my_week(SESSIONS.get(user_id), user_id)
+        render = user_id if render else 'sleep'  # if none sport selected
+
     try:
-        with open(f'images/{user_id if contains else "sleep"}.png', 'rb') as file:
+        with open(f'images/{render}.png', 'rb') as file:
             await bot.edit_message_media(
                 chat_id=callback_query.message.chat.id,
                 message_id=callback_query.message.message_id,
@@ -387,7 +510,12 @@ async def change_day(callback_query: CallbackQuery):
 async def select_day(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
     user_id = callback_query.from_user.id
-    contains = generators.generate_date_image(date, user_id, SESSIONS.get(user_id), rewrite=True)
+
+    if is_offline(user_id):
+        contains = generators.generate_date_image(date, user_id, SESSIONS.get(ADMIN_ID), rewrite=True, ignore_checked_in=True)
+    else:
+        contains = generators.generate_date_image(date, user_id, SESSIONS.get(user_id), rewrite=True)
+
     with open(f'images/{user_id if contains else "free"}.png', 'rb') as file:
         await bot.edit_message_media(
             chat_id=callback_query.message.chat.id,
@@ -401,12 +529,11 @@ async def select_day(callback_query: CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith('ckin/'))
 async def select_type(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
-    user_id = callback_query.from_user.id
     await bot.edit_message_caption(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
         caption='Select sport type that you want to checkin:',
-        reply_markup=generators.generate_date_courses_buttons(date, SESSIONS.get(user_id))
+        reply_markup=generators.generate_date_courses_buttons(date, SESSIONS.get(ADMIN_ID))
     )
     await callback_query.answer('Select course')
 
@@ -419,8 +546,8 @@ async def select_time(callback_query: CallbackQuery):
     await bot.edit_message_caption(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
-        caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)),
-        reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id), user_id),
+        caption=generators.generate_group_time_caption(group_id, SESSIONS.get(ADMIN_ID)),
+        reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(ADMIN_ID if is_offline(user_id) else user_id), user_id, ignore_checked_in=is_offline(user_id)),
     )
     await callback_query.answer('Select time')
 
@@ -429,6 +556,10 @@ async def select_time(callback_query: CallbackQuery):
 async def auto_menu(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
     user_id = callback_query.from_user.id
+
+    if is_offline(user_id):
+        await callback_query.answer('Please switch to a `full-experience mode` in order to set autocheckin', show_alert=True)
+        return
 
     await bot.edit_message_caption(
         chat_id=callback_query.message.chat.id,
@@ -488,6 +619,10 @@ async def selected(callback_query: CallbackQuery):
     date = callback_query.data.split('/')[1]
     user_id = callback_query.from_user.id
 
+    if is_offline(user_id):
+        await callback_query.answer('Please switch to a `full-experience mode` in order to uncheckin', show_alert=True)
+        return
+
     await bot.edit_message_caption(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
@@ -502,8 +637,12 @@ async def selected(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     callback_type = callback_query.data.split('/')[0]
 
+    if is_offline(user_id) and callback_type == 'tid':
+        await callback_query.answer('Please switch to a `full-experience mode` in order to check in', show_alert=True)
+        return
+
     try:
-        training = api.get_training_info(SESSIONS.get(user_id), training_id)
+        training = api.get_training_info(SESSIONS.get(user_id if not is_offline(user_id) else ADMIN_ID), training_id)
         start_datetime = datetime.datetime.fromisoformat(training['training']['start'].split('+')[0])
         if callback_type == 'tid':
             if training['can_check_in'] and not training['checked_in']:
@@ -526,10 +665,14 @@ async def selected(callback_query: CallbackQuery):
             else:
                 database.add_user_notification(training_id, user_id)
 
-        training = api.get_training_info(SESSIONS.get(user_id), training_id)
+        training = api.get_training_info(SESSIONS.get(ADMIN_ID), training_id)
         date = training['training']['start'].split('T')[0]
         group_id = training['training']['group']['id']
-        contains = generators.generate_date_image(date, user_id, SESSIONS.get(user_id), rewrite=True)
+
+        if is_offline(user_id):
+            contains = generators.generate_date_image(date, user_id, SESSIONS.get(ADMIN_ID), rewrite=True, ignore_checked_in=True)
+        else:
+            contains = generators.generate_date_image(date, user_id, SESSIONS.get(user_id), rewrite=True)
 
         with open(f'images/{user_id if contains else "free"}.png', 'rb') as file:
             await bot.edit_message_media(
@@ -537,9 +680,10 @@ async def selected(callback_query: CallbackQuery):
                 message_id=callback_query.message.message_id,
                 media=InputMediaPhoto(
                     file,
-                    caption=generators.generate_group_time_caption(group_id, SESSIONS.get(user_id)),
+                    caption=generators.generate_group_time_caption(group_id, SESSIONS.get(ADMIN_ID)),
                     parse_mode='Markdown'),
-                reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(user_id), user_id)
+                reply_markup=generators.generate_date_group_time_buttons(date, group_id, SESSIONS.get(ADMIN_ID if is_offline(user_id) else user_id), user_id, ignore_checked_in=is_offline(user_id)),
+
             )
 
         await callback_query.answer('Notification status changed' if callback_type == 'ntid' else 'Information updated')
@@ -558,13 +702,13 @@ async def raw_checkin(callback_query: CallbackQuery):
         if training_info['can_check_in'] and not training_info['checked_in']:
             api.checkin(SESSIONS.get(user_id), training_id)
 
-            if callback_type == 'rawckin':
+            if callback_type == 'rawckin':  # message with no image
                 await bot.delete_message(
                     chat_id=user_id,
                     message_id=callback_query.message.message_id
                 )
             else:
-                contains = generators.draw_my_week(SESSIONS.get(user_id), user_id)
+                contains = generators.draw_my_week(SESSIONS.get(user_id), user_id)  # offline guys should never reach
                 with open(f'images/{user_id if contains else "sleep"}.png', 'rb') as file:
                     await bot.edit_message_media(
                         chat_id=callback_query.message.chat.id,
@@ -621,13 +765,38 @@ async def delete_message(callback_query: CallbackQuery):
     await callback_query.answer('Nice!')
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith('logout/'))
+async def logout_approve(callback_query: CallbackQuery):
+    date = callback_query.data.split('/')[1]
+    user_id = callback_query.from_user.id
+
+    await bot.edit_message_caption(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        caption='You sure you want to logout?',
+        reply_markup=generators.generate_logout_inline(date)
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data == 'logoutnow')
+async def logout_now(callback_query: CallbackQuery):
+    user_id = callback_query.from_user.id
+    if SESSIONS.get(user_id):
+        SESSIONS[user_id] = None
+    database.remove_user(user_id)
+    await bot.send_message(
+        chat_id=callback_query.from_user.id,
+        text="Your session information successfully deleted from the database. Message /start if you want to register."
+    )
+
+
 @dp.message_handler(commands=['logout'])
 async def logout(message: Message):
     user_id = message.from_user.id
     if SESSIONS.get(user_id):
         SESSIONS[user_id] = None
     database.remove_user(user_id)
-    await message.reply("Your session information successfully deleted from the database")
+    await message.reply("Your session information successfully deleted from the database. Message /start if you want to register.")
 
 
 @dp.message_handler(commands=['repo'])
@@ -637,6 +806,17 @@ async def repo(message: Message):
         "[open source code](https://github.com/cutefluffyfox/SportUIBot)\. "
         "Good luck exploring\!",
         parse_mode='MarkdownV2')
+
+
+@dp.message_handler(commands=['support'])
+async def support(message: Message):
+    await message.reply(
+        f"Thanks for being supportive of this project!\n\nIf you want to help, you can contact me at telegram "
+        f"@cutefluffyfox to help with new ideas and bugs. If you want, you can even "
+        f"[buy me]({getenv('CROWDFUNDING')}) a cup of coffe =W=. Thanks for all the support! <3\n\n"
+        f"P.S. To continue using bot, send /now",
+        parse_mode='Markdown'
+    )
 
 
 @dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['kill'])
@@ -661,15 +841,24 @@ async def broadcast_message(message: Message):
     await BroadcastInfo.message.set()
 
 
-@dp.message_handler(lambda msg: msg.from_user.id == ADMIN_ID, commands=['help'])
+@dp.message_handler(commands=['help'])
 async def print_help(message: Message):
-    if message.from_user.id == ADMIN_ID:  # useless if, but extra safety is nice
+    if message.from_user.id == ADMIN_ID:  # special for admin only
         await message.reply(
             'You are admin, how you have forgotten your commands? Ok, let me explain:\n'
             '/reload_semester - you will reload huge file that contains info about all trainings for current semester (used in auto-checkin)\n'
             '/broadcast - you will open menu to send message to all users (statistic will be provided). '
             'MardownV2 is implemented, so you can add *balled*, _italic_ and |spoiler| messages!\n'
             '/kill - kill bot even if you are not connected to university wifi\n'
+        )
+    else:
+        await message.reply(
+            'Hi! I am surprised you here. This is inline-based bot so commands are pretty useless, however there are some:\n'
+            '/login - login to your account\n'
+            '/logout - remove all the data about you from the database\n'
+            '/repo - get link to github repository\n'
+            '/support - support creator of the bot\n'
+            '/now - get schedule for today & open main menu'
         )
 
 
@@ -720,8 +909,14 @@ async def selected_confirmation_result(callback_query: CallbackQuery, state: FSM
 @dp.message_handler()
 async def unknown_message(message: Message):
     user_id = message.from_user.id
-    contains = generators.generate_today_image(user_id, SESSIONS.get(user_id))
-    with open(f'images/{user_id if contains else "sleep"}.png', 'rb') as file:
+
+    date = generators.get_today()
+    if is_offline(user_id):
+        contains = generators.generate_date_image(date, user_id, SESSIONS.get(ADMIN_ID), rewrite=True, ignore_checked_in=True)
+    else:
+        contains = generators.generate_date_image(date, user_id, SESSIONS.get(user_id), rewrite=True)
+
+    with open(f'images/{user_id if contains else "free"}.png', 'rb') as file:
         await bot.send_photo(
             chat_id=message.from_user.id,
             caption=generators.generate_date_caption(generators.get_today()),
@@ -732,4 +927,5 @@ async def unknown_message(message: Message):
 
 
 if __name__ == '__main__':
+    update_session(ADMIN_ID)
     executor.start_polling(dp, skip_updates=True)

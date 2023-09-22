@@ -20,14 +20,15 @@ def create_session(user_id: int) -> Session or None:
     data = get_user(user_id)
     if data:
         data: OrderedDict
-        s.cookies['sessionid'] = data['session_id']
-        s.cookies['csrftoken'] = data['csrf_token']
+        s.cookies['sessionid'] = data.get('session_id')
+        s.cookies['csrftoken'] = data.get('csrf_token')
         s.cookies['student_id'] = data['student_id']
         return s
     return None
 
 
-def create_user(user_id: int, student_id: int, session_id: str, csrftoken: str) -> None:
+def create_user(user_id: int, student_id: int or str, session_id: str = None, csrftoken: str = None) -> None:
+    remove_user(user_id)
     ref = db.reference(f'/users')
     ref.child(str(user_id)).set(
         {

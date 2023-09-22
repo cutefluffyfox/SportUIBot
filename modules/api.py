@@ -80,6 +80,10 @@ def session_is_valid(session: Session) -> bool:
     ).status_code
 
 
+def student_id_is_valid(session: Session, student_id: int or str) -> bool:
+    return 'html' not in str(session.get(f'{SERVER_URL}/api/attendance/{student_id}/negative_hours').content)
+
+
 def get_user_statistics(session: Session) -> dict:
     return {
         'hours': session.get(f'{SERVER_URL}/api/attendance/{session.cookies["student_id"]}/negative_hours').json()['final_hours'],
